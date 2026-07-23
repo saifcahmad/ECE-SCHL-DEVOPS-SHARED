@@ -1,0 +1,24 @@
+# Documentation:
+# - https://dev.azure.com/cmhcvsts/CMHC-SCHL%20-%20DevOps/_wiki/wikis/DevOps%20Wiki/11964/Configuring-your-repository-with-CODEOWNERS-policy-pipeline
+# - https://dev.azure.com/cmhcvsts/CMHC-SCHL%20-%20DevOps/_wiki/wikis/DevOps%20Wiki/11991/Configuring-branch-specific-CODEOWNERs
+#
+# Note:
+# - We expect that a rule will always have a comment either directly from the previous lines or on the same line.
+# - File-paths under '/' are relative to the root folder of the repository
+# - File-paths with spaces should be escaped '\ '. e.g, /devops/arm\ template
+# - Owners can be a Team or Permission Group from another project. e.g, "[CMHC-SCHL - Project1]\Team"
+# - Owners can be a Team or Permission Group from the current project, e.g, "PR Approvers - Architecture"
+# - Owners can be an AD Group. e.g, "[TEAM FOUNDATION]\HBT_ACNON_ADM"
+#
+# Syntax:
+# # <required comment>
+# <file-path> <owner> [<owner2> <owner3>]
+
+# CODEOWNERS files be owned by the project administrators.
+/devops/policy/**/CODEOWNERS*;/.ado/policy/**/CODEOWNERS*;/.ado/branch-policy/**/CODEOWNERS* "Project Administrators"
+
+# CODEOWNERS pipeline will be owned by the project administrators.
+/devops/pipelines/policy/branch-policy/* "Project Administrators"
+
+# DevOps pipeline and configuration changes with all the reporting related files
+/devops/* "PR Approvers - DevOps Automation"
