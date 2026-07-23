@@ -1,0 +1,66 @@
+###############################################################################
+# Author: Central DevOps Team
+# Name: aquasec-scan-step (STEP TEMPLATE)
+#
+# This step template is used to run an AquaSec scan on a image.
+# Make sure to have a Generic Service Connection set with the AquaSec Credentials.
+#
+#  Example:
+#   - template: /devops/pipelines/templates/steps/aquasec-scan-step.yml@shared
+#     parameters:
+#       registryName: ${{ parameters.registryName }}
+#       version: ${{ parameters.version }}
+#       imageName: ${{ parameters.imageName }}
+###############################################################################
+
+#region########################## PARAMETERS ##################################
+parameters:
+
+# Specified the name of the AquaSec Generic Service Connetion
+- name: aquaSecurityScannerServiceConnection
+  type: string
+  default: AquaSecurityScanner-Generic-ServiceConnection
+
+# Specifies the name of the Azure Container Registry (ACR) to push the image to.
+# Please note that '.azurecr.io' is automatically appended to this name wherever a fully qualified name is required.
+- name: registryName
+  type: string
+
+# Specifies the version of the Docker Image and Helm Chart.
+- name: version
+  type: string
+  default: $(version)
+
+# Specifies the Docker Image name associated with the microservice build.
+- name: imageName
+  type: string
+  default: $(imageName)
+
+# Specified the task condition.
+- name: condition
+  type: string
+  default: ""
+
+#endregion#####################################################################
+
+steps:
+# Runs the Aqua Security Scanner and uploads the report to Azure DevOps.
+- task: AuthenticatedPowerShell@1
+  displayName: 'Run Aqua Security Scanner'
+  ${{ if parameters.condition }}:
+    condition: ${{ parameters.condition }}
+  inputs:
+    serviceConnection: ${{ parameters.aquaSecurityScannerServiceConnection }}
+    targetType: 'inline'
+    script: |
+      /usr/bin/scannercli-22-04 scan ${{ parameters.imageName }}:${{ parameters.version }} --dockerless `
+        --registry ${{ upper(parameters.registryName) }} `
+        -U $env:AS_SC_USERNAME `
+        -P $env:AS_SC_PASSWORD `
+        --host $env:AS_SC_URL `
+        --htmlfile aquasec-scanner-report.html `
+        --no-verify --html
+
+      $aquaSecScannerReport = (Resolve-Path -Path 'aquasec-scanner-report.html').Path
+      Write-Host "##vso[task.addattachment type=aquaReport;name=aquaSecurity.html;]$aquaSecScannerReport"
+    pwsh: true
