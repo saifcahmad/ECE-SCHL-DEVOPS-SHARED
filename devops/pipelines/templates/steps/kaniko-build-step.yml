@@ -1,0 +1,244 @@
+#region######################### KANIKO BUILD #################################
+# Author: Central DevOps Team
+# Name: kaniko-build-step (STEP TEMPLATE)
+#
+# This step template is used to deploy a Kaniko Helm Chart to execute a container
+# image build
+#endregion#####################################################################
+
+parameters:
+# Specifies the Azure Service Connection to use for Interacting with Azure Resources
+- name: azServiceConnection
+  type: string
+
+# Specifies the name of the Azure Container Registry (ACR) to pull and push images from and to.
+# Please note that '.azurecr.io' is automatically appended to this name wherever a fully qualified name is required.
+- name: registryName
+  type: string
+
+# Specifies the source path of the Container Image to build.
+- name: sourcePath
+  type: string
+  default: $(sourcePath)
+
+# Specifies the name of the artifact that is created.
+- name: artifactName
+  type: string
+  default: $(artifactName)
+
+# Specifies the path to the build directory where the Kaniko context and test results will be put in the Kaniko pod
+- name: buildDirectoryPath
+  type: string
+
+# Specifies the Helm chart values to pass to the Kaniko Helm chart via --set statement
+- name: helmChartValues
+  type: string
+
+# Specifies the name to give the Kaniko Helm Chart Release
+- name: kanikoReleaseName
+  type: string
+
+# Specifies the path of the folder to copy test results to
+- name: testResultsDestination
+  type: string
+  default: ''
+
+# Specifies the path of the source folder in the kaniko pod to copy the test results from
+- name: testResultsSource
+  type: string
+  default: ''
+
+# Specifies the timeout of the Helm install/upgrade operation.
+- name: installTimeout
+  type: string
+  default: '5m0s'
+
+steps:
+  # Retrieve the login token for the ACR and write it to a task variable for use later on
+  - task: AzureCLI@2
+    displayName: 'Create Kaniko Task Variables'
+    inputs:
+      azureSubscription: ${{ parameters.azServiceConnection }}
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      addSpnToEnvironment: true
+      inlineScript: |
+        # Retrieve the information about where this build is running
+        $buildClusterName = "$(Agent.Name)".Split("_")[0]
+        $clusterRealmCode = $buildClusterName.Substring(0,2)
+        $clusterEnvironmentCode = $buildClusterName.Substring(0,4).ToLower()
+        $buildClusterResourceGroup = "AKS-CLUS-$clusterRealmCode"
+        $buildPodNamespace = "$clusterEnvironmentCode-bld"
+        $agentIdentifier = "$(Agent.Name)".Substring("$(Agent.Name)".Length - 1)
+
+        # Log into the build cluster to retrieve the name of the node this pipeline is running on
+        az aks get-credentials -n $buildClusterName -g $buildClusterResourceGroup --admin --overwrite-existing
+        $podNodeHostname = (kubectl get pod -n $buildPodNamespace azure-pipelines-agent-$agentIdentifier -o json | ConvertFrom-Json).spec.nodeName
+
+        # Shorten the release name if it exceeds the Helm character limit
+        $kanikoReleaseName = "${{ parameters.kanikoReleaseName }}"
+        If ($kanikoReleaseName.length -gt 36) {
+          # Remove generic words
+          $releaseNameArray = $kanikoReleaseName -Split "-" -ne "service" -ne "function" -ne "handlers"
+          $kanikoReleaseName = $releaseNameArray -Join "-"
+
+          # If all else fails strip it down to the limit with some logic to preserve the version numbers
+          If ($kanikoReleaseName.length -gt 36) {
+            $versionString = "-$($releaseNameArray[-3])-$($releaseNameArray[-2])-$($releaseNameArray[-1])"
+            $availableCharacters = 36 - $versionString.length
+
+            $kanikoReleaseName = $kanikoReleaseName.Substring(0, $availableCharacters) + $versionString
+          }
+        }
+
+        # Write out all the variables to be used by downstream tasks
+        Write-Output "##vso[task.setvariable variable=azConnectionClientId]$($env:servicePrincipalId)"
+        Write-Output "##vso[task.setvariable variable=azConnectionClientSecret;secret]$($env:servicePrincipalKey)"
+        Write-Output "##vso[task.setvariable variable=azConnectionTenantId]$($env:tenantId)"
+        Write-Output "##vso[task.setvariable variable=kanikoReleaseName;]$kanikoReleaseName"
+        Write-Output "##vso[task.setvariable variable=agentIdentifier;]$agentIdentifier"
+        Write-Output "##vso[task.setvariable variable=podNodeHostname;]$podNodeHostname"
+        Write-Output "##vso[task.setvariable variable=buildPodNamespace;]$buildPodNamespace"
+        Write-Output "##vso[task.setvariable variable=buildClusterName;]$buildClusterName"
+        Write-Output "##vso[task.setvariable variable=buildClusterResourceGroup;]$buildClusterResourceGroup"
+
+  # Create the context the Kaniko builder will use
+  - task: AzureCLI@2
+    displayName: 'Create Kaniko Context and Chart Overrides'
+    inputs:
+      azureSubscription: ${{ parameters.azServiceConnection }}
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        # Clear out any existing build remnants from a prior run before putting kaniko context there
+        If (Test-Path -Path ${{ parameters.buildDirectoryPath }}) {
+          Remove-Item -Path ${{ parameters.buildDirectoryPath }} -Force -Recurse
+        }
+        New-Item -Path ${{ parameters.buildDirectoryPath }} -ItemType "directory"
+
+        # Switch to the source folder and create the context tar file
+        Push-Location ${{ parameters.sourcePath }}
+        tar -cvzf ${{ parameters.artifactName }}.tar.gz .
+        mv ${{ parameters.artifactName }}.tar.gz ${{ parameters.buildDirectoryPath }}
+        Pop-Location
+
+        # Fix the chart values string and write it to a task variable
+        $kanikoHelmChartValues = "${{ parameters.helmChartValues }}" -replace ' ', ''
+        Write-Output "##vso[task.setvariable variable=kanikoHelmChartValues;]$kanikoHelmChartValues"
+
+  # Installs the Helm Chart on the Azure Kubernetes Cluster (AKS) using the Upgrade command.
+  - task: HelmDeploy@0
+    displayName: 'Install Kaniko Helm Chart'
+    inputs:
+      connectionType: 'Azure Resource Manager'
+      azureSubscription: ${{ parameters.azServiceConnection }}
+      azureResourceGroup: $(buildClusterResourceGroup)
+      kubernetesCluster: $(buildClusterName)
+      useClusterAdmin: true
+      namespace: $(buildPodNamespace)
+      command: 'upgrade'
+      chartType: 'FilePath'
+      chartPath: 'devops/helm-charts/kaniko-builder'
+      releaseName: $(kanikoReleaseName)
+      overrideValues: $(kanikoHelmChartValues)
+      arguments: '--timeout "${{ parameters.installTimeout }}" --debug'
+      force: false
+      failOnStderr: false
+
+  # Sets a status job variable that determines if the previous step passed or failed
+  - task: AzureCLI@2
+    displayName: 'Set Install Kaniko Helm Chart Status Variable'
+    condition: failed()
+    inputs:
+      azureSubscription: ${{ parameters.azServiceConnection }}
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        $installKanikoHelmChartStatus = "failed"
+        Write-Output "##vso[task.setvariable variable=installKanikoHelmChartStatus;]$installKanikoHelmChartStatus"
+
+  # Deploy the Kaniko build pod which executes the image build
+  - task: AzureCLI@2
+    displayName: 'Monitor Kaniko Build'
+    inputs:
+      azureSubscription: ${{ parameters.azServiceConnection }}
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        if ($env:SYSTEM_DEBUG -eq 'true') {
+          $VerbosePreference = "Continue"
+        }
+
+        # Log into the build cluster
+        az aks get-credentials -n $(buildClusterName) -g $(buildClusterResourceGroup) --admin --overwrite-existing
+
+        # Wait until the pod has started
+        Write-Output "Waiting for Kaniko pod to start..."
+        Start-Sleep -s 2
+        $podStatus = kubectl get pod -n $(buildPodNamespace) $(kanikoReleaseName) -o jsonpath='{..status.phase}'
+        $count = 0
+        While ($podStatus -eq "ContainerCreating" -or $podStatus -eq "Pending") {
+          If ($count -eq 100) {
+            Throw "Timed out waiting for Kaniko pod to start."
+          }
+          Start-Sleep -s 1
+
+          $podStatus = kubectl get pod -n $(buildPodNamespace) $(kanikoReleaseName) -o jsonpath='{..status.phase}'
+
+          $count++
+        }
+
+        # Tail the logs to monitor the build
+        kubectl logs -n $(buildPodNamespace) $(kanikoReleaseName) -f
+
+        # Once the logs exit, check if the pod is in failed status
+        $pod = kubectl get pod -n $(buildPodNamespace) $(kanikoReleaseName) -o json | ConvertFrom-Json
+        Write-Verbose ("POD Json:`n{0}" -f ($pod | ConvertTo-Json -Depth 10))
+        $podStatus = $pod.status.phase
+        $terminatedState = $pod.status.containerStatuses.state.terminated
+        $podTerminated = ($terminatedState -and $terminatedState.exitCode -ne 0)
+        if ($podTerminated) {
+          $exitCode = $terminatedState.exitCode
+          Write-Output "##vso[task.logIssue type=error]Container build process exited with exit code $exitCode. This could be an issue with application code or unit tests. Review the log for errors."
+        }
+        
+        if (($podStatus -ne "Succeeded" -and $podStatus -ne "Running") -or $podTerminated) {
+          Write-Output "##vso[task.complete result=Failed]Kaniko build did not complete successfully."
+        }
+
+  # Display the events of the build agent namespace to see errors associated with the kaniko helm chart install
+  - task: AzureCLI@2
+    displayName: 'Display Kaniko Chart Install Errors'
+    condition: eq(variables['installKanikoHelmChartStatus'],'failed')
+    inputs:
+      azureSubscription: ${{ parameters.azServiceConnection }}
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        # Log into the build cluster
+        az aks get-credentials -n $(buildClusterName) -g $(buildClusterResourceGroup) --admin --overwrite-existing
+
+        # Get the events for the bld namespace
+        kubectl get events -n $(buildPodNamespace) --sort-by='.metadata.creationTimestamp' -A | grep '$(kanikoReleaseName)'
+
+  # Cleans up all the remnants from the kaniko build and deletes the kaniko pod. Comment out this task to debug Kaniko
+  - task: AzureCLI@2
+    displayName: 'Clean Up Kaniko Build'
+    condition: always()
+    inputs:
+      azureSubscription: ${{ parameters.azServiceConnection }}
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        # Log into the build cluster
+        az aks get-credentials -n $(buildClusterName) -g $(buildClusterResourceGroup) --admin --overwrite-existing
+
+        # Uninstall with helm
+        helm uninstall -n $(buildPodNamespace) $(kanikoReleaseName)
+
+        # Move test results to the specified directory if necessary before nuking the context folder
+        If ("${{ parameters.testResultsSource }}" -ne "" -and "${{ parameters.testResultsDestination }}" -ne "" -and (Test-Path -Path ${{ parameters.testResultsSource }})) {
+          Move-Item ${{ parameters.testResultsSource }} ${{ parameters.testResultsDestination }} -Force
+        }
+
+        Remove-Item -Path ${{ parameters.buildDirectoryPath }} -Force -Recurse
