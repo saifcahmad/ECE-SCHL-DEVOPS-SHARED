@@ -1,0 +1,118 @@
+#region######################## STAGE TEMPLATE ################################
+# Author: Central DevOps Team
+# Name: stage (STAGE TEMPLATE)
+#
+# This template emits the azure devops stage definition and delegates the work
+# to one or more job templates.
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+# Stage specific parameters
+###############################################################################
+parameters:
+
+# Represents the pipeline execution type (required)
+- name: type
+  type: string
+
+# Represents the build version, optionally specified at pipeline execution
+- name: buildVersion
+  type: string
+  default: 'current'
+
+# Represents the meta-data for the stage object
+#   Expected meta-data:
+#       name: <string> - unique environment name, no spaces (dev_int, ft, ao_ft)
+#       displayName: <string> - unique short name (DEV-INT)
+#       dependsOn: <string[]> - environment 'name' dependencies (build, dev_int, etc)
+#       condition: <string[]> - runtime evaluation for environment execution.
+#       secondaryRegionCapable: <boolean> - indicates this stage supports dual-region scenarios
+#       secondaryRegion: <boolean> - indiciates this stage is the secondary region in a dual-region scenario
+- name: stage
+  type: object
+
+# Represents the agent pool object to use at the job level
+- name: pool
+  type: object
+  default: {}
+
+# Represents default stage-level variables supplied by the managed pipeline
+- name: variables
+  type: object
+  default: {}
+
+# Represents the Azure DevOps Pipeline Environment
+- name: environmentName
+  type: string
+  # TODO: allow empty environmentName? ie not a deployment job?
+
+# Represents the 'Realm' for this stage (DEV, STG, PRD)
+#   This value is used in Service Connections
+- name: realm
+  type: string
+
+# Represents parameters that will be injected into the ci-stage
+#   Schema for this object is defined by the '${{ type }}-ci-template.yml'
+- name: buildParameters
+  type: object
+  default: {}
+
+# Represents parameters that will be provided injected into the cd-stage
+#   Schema for this object is defined by the '${{ type }}-cd-template.yml'
+- name: deployParameters
+  type: object
+  default: {}
+#endregion#####################################################################
+
+stages:
+# ci stage customizations
+- ${{ if eq( parameters.stage.name, 'build') }}:
+  - stage: ${{ parameters.stage.name }}
+    displayName: ${{ parameters.stage.displayName }}
+    condition: eq('${{ parameters.buildVersion }}', 'current')
+    variables: ${{ parameters.variables }}
+    jobs:
+    - template: /devops/pipelines/templates/jobs/${{ parameters.type }}-ci-template.yml
+      parameters:
+        coreParameters:
+          buildVersion: ${{ parameters.buildVersion }}
+          pool: ${{ parameters.pool }}
+          realm: ${{ parameters.realm }}
+        # pass any template-specific buildParameters
+        ${{ if ne(parameters.buildParameters,'') }}:
+          ${{ parameters.buildParameters }}
+
+# cd stage customizations
+- ${{ else }}:
+  - stage: ${{ parameters.stage.name }}
+    displayName: ${{ parameters.stage.displayName }}
+    dependsOn: ${{ parameters.stage.dependsOn }}
+    condition: ${{ join( ' ', parameters.stage.condition ) }}
+    variables:
+    - name: environmentName
+      value: ${{ parameters.environmentName }}
+    - name: environmentTag
+      value: ${{ parameters.environmentName }}
+    - ${{ parameters.variables }}
+    - name: Framework.Stage
+      value: ${{ convertToJson(parameters.stage) }}
+    - name: Framework.StageName
+      value: '${{ parameters.stage.name }}'
+    - name: Framework.StageDisplayName
+      value: '${{ parameters.stage.displayName }}'
+    - name: Framework.SecondaryRegion
+      value: ${{ parameters.stage.secondaryRegion }}
+    - name: Framework.SecondaryRegionCapable
+      value: ${{ parameters.stage.secondaryRegionCapable }}
+    jobs:
+    - template: /devops/pipelines/templates/jobs/${{ parameters.type }}-cd-template.yml
+      parameters:
+        coreParameters:
+          buildVersion: ${{ parameters.buildVersion }}
+          environmentName: ${{ parameters.environmentName }}
+          pool: ${{ parameters.pool }}
+          realm: ${{ parameters.realm }}
+          stage: ${{ parameters.stage }}
+        ${{ if ne(parameters.deployParameters, '') }}:
+          ${{ parameters.deployParameters }}
