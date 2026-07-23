@@ -1,0 +1,31 @@
+#region########################### PIPELINE ###################################
+# Author: Central DevOps Team
+# Name: <REPOSITORY_NAME>-repository-policy (PIPELINE)
+#
+# Automate repository policy configuration to this repository
+#endregion#####################################################################
+
+resources:
+  repositories:
+  - repository: shared    # We need to specify the shared repository since it is required by the template.
+    type: git
+    name: CMHC-SCHL - DEVOPS/CMHC-SCHL-DEVOPS-SHARED
+    ref: main
+
+name: $(version)
+
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - devops/policy/*
+    - .ado/policy/*
+    - .ado/branch-policy/*
+    - devops/pipelines/policy/branch-policy/*
+
+extends:
+  template: /devops/pipelines/templates/pipeline.yml@shared
+  parameters:
+    type: policy-branch
