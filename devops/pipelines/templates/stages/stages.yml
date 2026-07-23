@@ -1,0 +1,269 @@
+#region######################## STAGES TEMPLATE ###############################
+# Author: Central DevOps Team
+# Name: stages (STAGES TEMPLATE)
+#
+# This template takes the inputs from the managed pipeline and constructs a
+# final set of stage objects that will be used for the pipeline execution.
+#
+# The preferred stages are defined in the managed pipeline, but we also allow
+# the pipeline author to augment or replace stages for their intended purpose.
+#
+# As each pipeline type might have more than one job, we defer the definition
+# of the azure devops _stage_ until after user-supplied environment configuration
+# is provided.
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+# Carries parameters from the pipeline.yml into the various stages and
+# subsequent jobs. By design, all parameters are required (do not define
+# values) except the custom optional flags.
+###############################################################################
+parameters:
+
+# core parameters :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+- name: type
+  type: string
+
+- name: buildVersion
+  type: string
+
+# stage parameters ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Specifies the environmental stages supported by the deployed resource in the pipeline
+- name: resourceKind
+  type: string
+
+# Represents the meta-data for a stage (not based on azure-devops schema)
+#   Expected meta-data:
+#     stages:
+#       - name: <string> - lowercase, no spaces. unique identifier
+#         displayName: <string> - user friendly stage name
+#         environmentName: <string> - Azure DevOps Environment name
+#         environmentPrefix: <string> - standard environment prefixes EDDV1
+#         explicitTarget: <boolean> - must be executed as 'directRelease'
+#         dependsOn: <string[]> - stage dependencies
+#         realm: <string> - (DEV|STG|PRD)
+#         reasonTargets: <string[]> - specifies which Build.BuildReason should be supported for this stage
+#         resourceTargets: <string[]> - supported scenarios for stage
+#         branchTargets: <string[]> - supported branches. must start with refs/heads. start with ~ for 'startsWith' comparison
+#         platform: <string> - (windows|linux)
+#         alias: <string> - config file name. if not specified, name will be used for the config
+- name: stages
+  type: object
+
+# Represents parameters that will be injected into the ci-stage
+#   Schema for this object is defined by the '${{ type }}-ci-template.yml'
+- name: buildParameters
+  type: object
+  default: {}
+
+# Represents parameters that influence user-specified configuration
+# Supports two possible configurations:
+#    - Using a single value:
+#       variablesFolder: /folder/path
+#    - Using an array of values:
+#       variablesFolder:
+#       - /folder/path1
+#       - /folder/path2
+- name: variablesFolder
+  type: object
+  default: ''
+
+# Represents parameters that will add variable groups to stages
+# E.g.
+# variableGroups:
+#   - myVariableGroup-{{env}}
+- name: variableGroups
+  type: object
+  default: ''
+
+# Represents parameters that will be injected into the cd-stage
+#   Schema for this object is defined by the '${{ type }}-cd-template.yml'
+- name: deployParameters
+  type: object
+  default: {}
+
+# Optional Flag: Exclude specific stages
+#   Allows teams to define an array of stage names that should not be included in the pipeline
+#   For example, a service that is not deployed to AO-SIT
+- name: excludeStages
+  type: object
+  default: {}
+
+# Optional Flag: Defines a mapping between stage-names and Azure Pipeline Environments
+#   Allow teams to define alternate mappings for stages to Azure Pipeline Environments.
+#   This approach is not recommended but is provided to support short-term workarounds.
+#   Notes:
+#   - pre-production and production environments cannot be overriden
+#   - environments will default to DEVELOPMENT if the mapping is not provided
+- name: environmentMappings
+  type: object
+  default:
+    dev_int: 'DEVELOPMENT'
+    ft: 'FUNCTIONAL TEST'
+    sit: 'SYSTEM INTEGRATION TEST'
+    uat: 'USER ACCEPTANCE TEST'
+    ao_dev_int: 'AO - DEVELOPMENT'
+    ao_ft: 'AO - FUNCTIONAL TEST'
+    ao_sit: 'AO - SYSTEM INTEGRATION TEST'
+    ao_uat: 'AO - USER ACCEPTANCE TEST'
+    pt_central: 'PERFORMANCE TEST'
+    pt_east: 'PERFORMANCE TEST'
+
+# Optional Flag: Represents whether the build stage should be excluded from the pipeline definition
+- name: includeBuildStage
+  type: boolean
+  default: true
+
+# Optional Flag: Allow teams to specify whether East or Central is the primary region.
+- name: primaryRegion
+  type: string
+  default: 'east'
+  values:
+  - 'east'
+  - 'central'
+
+#endregion#####################################################################
+
+stages:
+- ${{ each stage in parameters.stages }}:
+
+  # only emit the stage if the resourceKind supports it
+  - ${{ if and( containsValue( stage.resourceTargets, parameters.resourceKind ), not(containsValue(parameters.excludeStages, stage.name)) ) }}:
+    - template: /devops/pipelines/templates/stages/stage.yml
+      parameters:
+        ${{ if eq(parameters.includeBuildStage, true) }}:
+          buildVersion: ${{ parameters.buildVersion }}
+        ${{ else }}:
+          buildVersion: 'none' # don't download artifacts
+        type: ${{ parameters.type }}
+        environmentName: ${{ coalesce( stage.environmentName, parameters.environmentMappings[stage.name], 'DEVELOPMENT' ) }}
+        realm: ${{ stage.realm }}
+        stage:
+          name: ${{ stage.name }}
+          displayName: ${{ stage.displayName }}
+          ${{ if ne( stage.dependsOn, '') }}:
+            dependsOn:
+            - ${{ each dep in stage.dependsOn }}:
+              - ${{ if containsValue(parameters.stages.*.name, dep) }}: # stage is valid
+                - ${{ if not(containsValue(parameters.excludeStages,dep)) }}: # stage isn't excluded
+                  - ${{ dep }}
+                # handle scenario where dependent stage is excluded but there's still a build dependency
+                - ${{ elseif eq(parameters.includeBuildStage,true) }}: # possible bug if there's multiple dependencies
+                  - build
+          secondaryRegionCapable: ${{ and( eq(parameters.resourceKind, 'dual-region'), or( contains(stage.name, 'east'), contains(stage.name, 'central')) ) }}
+          secondaryRegion: ${{ and( or( contains(stage.name,'east'), contains(stage.name,'central') ), not( contains(stage.name, parameters.primaryRegion) ) ) }}
+          condition:
+          # must have working build or satisfy stage/branch/directRelease
+          - and(
+          #   conditionally require a working ci if supported
+          - ${{ if eq( parameters.includeBuildStage, 'true') }}:
+            - or(
+            -   succeeded('build'),
+            -   ne('${{ parameters.buildVersion }}', 'current')
+            - ),
+          - ${{ else }}: # and(,) must have two arguments
+            - eq('${{ parameters.buildVersion }}', 'current'),
+          #   satisfy execution requirements or bypass with directRelease
+          -   or(
+          #     ensure build.reason is supported, the dependent stages didn't fail and branch conditions are met
+          -     and(
+          #       ensure directRelease is true if this only supports direct release
+          - ${{ if eq( stage.explicitTarget, true) }}:
+            -     eq( variables['directRelease'], 'true'),
+          #       we need to check if the pipeline run is supported based on build.reason
+          - ${{ if ne( stage.reasonTargets, '') }}:
+            -     in(variables['Build.Reason'], ${{ stage.reasonTargets }} ),
+          - ${{ else }}: # use default reasons
+            -     in(variables['Build.Reason'], 'Manual', 'IndividualCI', 'BatchedCI'),
+          #       emit dependent stage status requirements
+          - ${{ each dep in stage.dependsOn }}:
+            #     emit stage dependency based on the supported stages in the resourceKind
+            - ${{ if containsValue(parameters.stages.*.name, dep) }}:
+              - ${{ if not(containsValue(parameters.excludeStages,dep)) }}: # stage isn't excluded
+                - in(dependencies.${{ dep }}.result, 'Succeeded', 'Skipped', ''),
+              # handle scenario where dependent stage is excluded but there's still a build dependency
+              - ${{ elseif eq(parameters.includeBuildStage,true) }}: # possible bug if there's multiple dependencies
+                - in(dependencies.build.result, 'Succeeded', 'Skipped', ''),
+          #       must be from one of the supported branches
+          - ${{ if ne( stage.branchTargets, '') }}:
+            -     or(
+            #       emit branch requirements
+            - ${{ each branch in stage.branchTargets }}:
+              #     perform pattern matching if branch starts with ~
+              - ${{ if startsWith( branch, '~') }}:
+                -   startsWith( variables['Build.SourceBranch'], '${{ replace(branch,'~','') }}' ),
+              - ${{ else }}: # exact match
+                -   eq( variables['Build.SourceBranch'], '${{ branch }}'),
+            #       must have more than on operand in or(,) and to handle trailing comma in the list
+            -       false
+            -     ),
+          #     must have more than one operand in and(,) and to handle trailing comma
+          #     - emit the stage name to support debugging
+          -     eq('${{ stage.name }}', '${{ stage.name }}')
+          -     ),
+          #     allow bypass / manual execution of runs
+          -     eq( variables['directRelease'], 'true')
+          -   )
+          - )
+        pool:
+          ${{ if eq( coalesce( stage.platform, 'linux'), 'linux') }}:
+            name: 'CMHC-SCHL Agent Pool (Linux) - ${{ stage.realm }}'
+          ${{ elseif eq( stage.platform, 'windows') }}:
+            name: 'CMHC-SCHL Agent Pool - ${{ stage.realm }}'
+          ${{ else }}: # allow teams to specify cloudhosted-windows-latest
+            vmImage: ${{ replace(stage.platform, 'cloudhosted-','') }}
+        variables:
+        - ${{ if ne( stage.environmentPrefix, '') }}:
+          - name: environmentPrefix
+            value: '${{ stage.environmentPrefix }}'
+          - name: environmentPrefixLowerCase
+            value: $[ lower(variables['environmentPrefix']) ]
+        - ${{ if ne( stage.partnerEnvironmentPrefix, '') }}:
+          - name: partnerEnvironmentPrefix
+            value: '${{ stage.partnerEnvironmentPrefix }}'
+        - ${{ if ne( stage.aliasEnvironmentPrefix, '') }}:
+          - name: aliasEnvironmentPrefix
+            value: '${{ stage.aliasEnvironmentPrefix }}'
+        - ${{ if eq( stage.location, '') }}: # default location
+          - ${{ if eq(parameters.primaryRegion, 'east') }}:
+            - name: azLocation
+              value: $(azPrimaryRegion)
+          - ${{ else }}:
+            - name: azLocation
+              value: $(azSecondaryRegion)
+        - ${{ else }}:
+          - name: azLocation
+            value: ${{ stage.location }}
+        # Framework variables to support diagnostics and debugging
+        #- ${{ if eq(variables['system.debug'], true) }}: # does not support runtime variables
+        - name: Framework.Type
+          value: '${{ parameters.type }}'
+        - name: Framework.ResourceKind
+          value: '${{ parameters.resourceKind }}'
+        - name: Framework.Realm
+          value: '${{ stage.realm }}'
+        - ${{ if ne( parameters.variablesFolder, '') }}:
+          # handle string value
+          - ${{ if ne( contains( join(';', parameters.variablesFolder), ';'), true ) }}:
+            - name: Framework.VariablesFolder
+              value: ${{ format('{0}/{1}.yml@self', parameters.variablesFolder, coalesce(stage.alias, stage.name) ) }}
+            - template: ${{ format('{0}/{1}.yml@self', parameters.variablesFolder, coalesce(stage.alias, stage.name) ) }}
+          - ${{ else }}: # handle array value
+            - name: Framework.VariablesFolder
+              value: ${{ join(';', parameters.variablesFolder ) }}
+            - ${{ each folder in parameters.variablesFolder }}:
+              - template: ${{ format('{0}/{1}.yml@self', folder, coalesce(stage.alias, stage.name) ) }}
+        - ${{ if parameters.variableGroups }}:
+          - ${{ each variableGroup in parameters.variableGroups }}:
+            - ${{ if contains( variableGroup, '{{env}}' ) }}:
+              - group: ${{ replace( variableGroup, '{{env}}', coalesce(stage.alias, stage.name) ) }}
+            - ${{ elseif contains( variableGroup, '{{envPrefix}}' ) }}:
+              - ${{ if ne( stage.name, 'build') }}:
+                - group: ${{ replace( variableGroup, '{{envPrefix}}',  stage.environmentPrefix ) }}
+            - ${{ else }}:
+              - group: ${{ variableGroup }}
+        buildParameters: ${{ parameters.buildParameters }}
+        deployParameters: ${{ parameters.deployParameters }}
