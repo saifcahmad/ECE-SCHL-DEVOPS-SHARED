@@ -1,0 +1,203 @@
+#region######################### CREATE PR STEP ###############################
+# Author: Central DevOps Team
+# Name: create-pull-request-step (STEP TEMPLATE)
+#
+# This step template is used to create a Pull Request.
+# By default, it is intended to be used in a PRD stage and triggered by a release pipeline.
+# Note: This shared step is dependant on the AzDevOpsHelper PowerShell module.
+#endregion#####################################################################
+
+parameters:
+# Specify the source branch for the PR if $(Build.SourceBranch) is not applicable.
+- name: sourceBranch
+  type: string
+  default: '$(Build.SourceBranch)'
+
+# The target branch of the Pull Request.
+# E.g. :
+# targetBranch:
+# - branch: 'ao/develop'
+#   team: 'Team AO XYZ'   # This will create a work item and link it to the team and the PR
+# - branch: 'develop'
+#   team: 'Team XYZ'
+# - branch: 'main'
+#   labels:
+#   - 'AUTO PR'           # This will add 'AUTO PR' label in the Pull Request
+- name: targetBranch
+  type: object
+  default:
+  - branch: 'main'
+
+# Set a condition to PR creation task if the default one is not applicable.
+# Make sure to handle single and double quotes correctly to work. It's recommended to enclose the statement in double quotes.
+- name: condition
+  type: string
+  default: ""
+
+# Show this step as failed if there is any issue found. By default, errors will be treated as warnings.
+- name: failOnError
+  type: boolean
+  default: false
+
+steps:
+
+- task: PowerShell@2
+  displayName: 'Create Pull Request'
+  ${{ if parameters.condition }}:
+    condition: ${{ parameters.condition }}
+  inputs:
+    targetType: 'inline'
+    script: |
+      Import-Module -Name "AzDevOpsHelper"
+
+      try {
+        $sourceBranch = "${{ parameters.sourceBranch }}"
+        $repositoryId = "$(Build.Repository.ID)"
+        $commonArgs = @{
+            OrganizationName = "cmhcvsts"
+            ProjectName      = "$(System.TeamProject)"
+            AccessToken      = "$(System.AccessToken)"
+        }
+
+        # Retrieve info
+
+        $targetBranch = ('${{ convertToJson( parameters.targetBranch ) }}' | ConvertFrom-Json)
+
+        # Search for a change number if specified in the pipeline variables or from stage approval comments.
+        $chgNumber = @()
+        $lookupInformation = @()
+        $lookupInformation += $env:snowChangeNumber
+        $lookupInformation += (Get-AzDevOpsPipelineApprovals @commonArgs `
+          -PipelineId "$(System.DefinitionId)" `
+          -BuildId "$(Build.BuildId)" `
+          -Environment "$(System.StageDisplayName)").steps.comment
+
+        $lookupInformation | ForEach-Object {
+          $null = $_ -match "(?=.*(?<snow>(CHG|INC|PRB)\d+))?"
+
+          if ($Matches['snow']){
+            $chgNumber += $Matches['snow'].ToUpper()
+          }
+        }
+
+        # Find if the repository uses the main or master branch.
+        $repoMainBranchName = "main"
+        if (Get-AzRepoBranches @commonArgs -RepositoryID $repositoryId -Name "master"){
+          $repoMainBranchName = "master"
+        }
+
+        Write-Verbose ("Validating targetBranch parameter...")
+
+        # Validation
+
+        $projectTeams = @{}     # Save project teams information.
+
+        $targetBranch = $targetBranch | ForEach-Object {
+          # Make sure we always get the correct main branch name
+          if ($_.branch -eq "main" -or $_.branch -eq "master"){
+            $_.branch = $repoMainBranchName
+          }
+
+          if (-not (Get-AzRepoBranches @commonArgs -RepositoryID $repositoryId -Name $_.branch)){
+            throw "No match found for branch '$($_.branch)' in the repository."
+          }
+
+          if ($_.Labels){
+            [array]$_.Labels += $chgNumber
+          }
+          else {
+            $_ | Add-Member -Name "Labels" -Value $chgNumber -MemberType NoteProperty
+          }
+
+          if ($_.team){
+            if (-not $projectTeams.ContainsKey($_.team)) {
+              $projectTeams.Add($_.team, (Get-AzTeamSettings @commonArgs -Team $_.team))
+            }
+          }
+
+          $_  # Return formated branch information
+        }
+
+        Write-Verbose ("Validated targetBranch:`n{0}" -f (ConvertTo-Json $targetBranch -Depth 10))
+
+        # Create PR
+
+        $targetBranch | ForEach-Object {
+          # Get active PRs
+          [array]$activePrs = Get-AzRepoPullRequest @commonArgs -SourceBranch $sourceBranch -targetBranch $_.branch -RepositoryID $repositoryId
+
+          $dateString = [System.DateTime]::Now.ToString("MM\/dd\/yy")
+          $PRTitle = "Integrate latest from $sourceBranch ($dateString)"
+
+          if ($activePrs.Count -eq 0) {
+
+            # Create the Pull Request
+            $pr = New-AzRepoPullRequest @commonArgs `
+              -RepositoryId $repositoryId `
+              -SourceBranch $sourceBranch `
+              -TargetBranch $_.branch `
+              -Title $PRTitle `
+              -Description "PR generated from the '$(Build.DefinitionName)' pipeline." `
+              -Labels $_.Labels
+
+              Write-Output "Created Pull Request: '$($pr.pullRequestId)'."
+
+              if ($_.team) {
+                #Getting the default area for the team
+                $team = $projectTeams[$_.team]
+
+                # create a new workitem
+                $task = New-AzBoardWorkItem `
+                    @commonArgs `
+                    -Title "Review PR ($SourceBranch -> $($_.branch) $dateString)" `
+                    -Area $team.defaultArea `
+                    -Iteration $team.defaultIteration.Path
+
+                # associate the workitem to the pull request
+                $task = Update-AzBoardWorkItem `
+                    @commonArgs `
+                    -Id $task.Id `
+                    -PullRequestArtifactUrl $pr.artifactId
+
+                Write-Output "Created workitem '$($task.id)' for team '$($_.team)'."
+              }
+          }
+          else {
+            # there can only be one active pr at a time for a source/target branch
+            $pr = $activePrs | Select-Object -First 1
+
+            Write-Output "Pull Request '$($pr.pullRequestId)' already exists for branch '$($_.branch)'."
+
+            if ($_.labels) {
+              $null = Add-AzRepoPullRequestLabel @commonArgs `
+                -RepositoryId $repositoryId `
+                -PullRequestId $pr.pullRequestId `
+                -Labels $_.labels
+
+              Write-Output "Updated labels in Pull Request '$($pr.pullRequestId)'."
+            }
+          }
+        }
+      }
+      catch {
+        if ( '${{ parameters.failOnError }}' -eq 'true' ) {
+          $logIssueType = 'error'
+          $logCompleteResult = 'Failed'
+        }
+        else{
+          $logIssueType = 'warning'
+          $logCompleteResult = 'SucceededWithIssues'
+        }
+
+        $errMsgs = @($_.Exception.Message, $_.Exception.StackTrace)
+        $errMsgs | ForEach-Object {
+          if ($_){
+            Write-Host "##vso[task.logissue type=$logIssueType;]$_"
+          }
+        }
+        Write-Host "##vso[task.complete result=$logCompleteResult;]$($errMsgs[0])"
+        Exit 0
+      }
+    pwsh: true
+  env:
+    snowChangeNumber: $(changeNumber) # Nothing guarantees that this variable will be set on the pipeline.
