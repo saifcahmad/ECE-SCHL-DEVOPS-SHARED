@@ -1,0 +1,711 @@
+#region####################### PIPELINE TEMPLATE ##############################
+# Author: Central DevOps Team
+# Name: pipeline (PIPELINE TEMPLATE)
+#
+# Centralized managed pipeline template
+#
+# - This is pipeline is intended to be a central pipeline that **all**
+#   managed pipelines are extended from:
+#
+#   External Repository:
+#
+#     resources
+#       repositories:
+#       - name: shared
+#         type: git
+#         name: 'CMHC-SCHL - DEVOPS/CMHC-SCHL-DEVOPS-SHARED'
+#         ref: <branch/tag> # optional
+#
+#     extends:
+#       template: /devops/pipelines/templates/pipeline.yml
+#       parameters:
+#         type: azure-sql-server
+#         variables:
+#         - /devops/pipelines/templates/variables/project-variables.yml@self
+#         - /devops/pipelines/setup/core-database-setup/variables.yml@self
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+#   These parameters define the runtime execution for the managed pipeline.
+#   By design, all parameters should have a default value so that users only
+#   need to specify parameters that are specific to their usage
+###############################################################################
+parameters:
+
+#region // core version variables??
+
+# Specifies the build artifact version number to use (Optional)
+#   The default value 'current' will construct a new build artifact.
+#   Specifing a version number (eg 1.0.5) will set the version number for this pipeline run
+#   Note:
+#     - the build number version must be a valid build.
+#     - Builds with status of Succeeded, InProgress or Cancelled can be used. Failed builds are not supported.
+#   Recommended usage:
+#     - Include this parameter in external templates when you have a build artifact that
+#       is unique
+- name: buildVersion
+  type: string
+  default: 'current'
+
+# Specifies the major version number to use (Optional)
+#   Pipelines that want to control their major version number can override the default major version.
+#   Alternatively, this value can be set with a compile-time global variable $(majorVersion)
+- name: majorVersion
+  type: string
+  default: $[ coalesce( variables['majorVersion'], 0) ]
+
+# Specifies the major version number to use (Optional)
+#   Pipelines that want to control their minor version number can override the default major version.
+#   Alternatively, this value can be set with a compile-time global variable $(minorVersion)
+- name: minorVersion
+  type: string
+  default: $[ coalesce( variables['minorVersion'], 0) ]
+#endregion
+
+# Specifies the managed pipeline type (Required)
+#   This 'type' parameter controls the pipeline execution logic
+- name: type
+  type: string
+  default: 'custom'
+  values:
+  # User-specified (limited support)
+  - custom
+
+  # Azure
+  - azure-appserviceplan
+  - azure-cosmosdb
+  - azure-functionapp-zip
+  - azure-keyvaultsecrets
+  - azure-logicapp
+  - azure-cognitivesearch
+  - azure-storageaccount
+  - azure-sqlserver
+  - azure-sqldacpac
+  - azure-webapp
+
+  # D365
+  - d365crm-customscript
+  - d365crm-dataverse
+  - d365crm-datamasking
+  - d365crm-provisioning
+  - d365crm-solutiondeploy
+  - d365crm-solutionexport
+  - d365crm-usermanagement
+  - d365fo-packagedeploy
+
+  # Policy
+  - policy-autopr
+  - policy-branch
+  - policy-pipelinevalidation
+
+  # Sitecore
+  - sitecore-deploy
+  - sitecore-dockerdeploy
+  - sitecore-docker-provisioning
+  - sitecore-restore
+  - sitecore-snapshot
+  - sitecore-vm-provisioning
+
+  # Test
+  - test-tosca
+
+  # Utilities
+  - utility-functionappmaintenance
+  - utility-logicappmaintenance
+  - utility-orchestration
+
+  # Wiki
+  - wiki-chg-docx
+  - wiki-export
+
+# Specifies the environmental stages supported by the deployed resource in the pipeline
+- name: resourceKind
+  type: string
+  default: single-region
+  values:
+  - 'build'                       # build
+  - 'realm'                       # dev_int, uat, prod
+  - 'realm-family'                # dev_int, sit, uat, cspt/espt, csot/esot, cppd/eppd
+  - 'realm-family-single-region'  # dev_int, sit, uat, espt, esot, eppd
+  - 'single-region'               # excludes pt-central, ot-central, pd-central
+  - 'dual-region'                 # all environments
+
+# Specifies the platform for the ci stage
+- name: buildPlatform
+  type: string
+  default: 'linux'
+  values:
+  - 'windows'
+  - 'linux'
+  - 'cloudhosted-windows-latest'
+
+# Specifies 'type'-specific parameters for the build stage
+#   The schema for this object is dependent on which 'type' value is provided
+- name: buildParameters
+  type: object
+  default: {}
+
+# Specifies user-specified custom stages (Optional)
+#   Expecting that the custom stage must have the following schema:
+#     - name: <string> required. lower-case, no-spaces or hypens, underscores are allowed
+#       displayName: <string> optional. display name for the stage
+#       dependsOn: <string[]> optional. stage dependencies
+#       environmentName: <string> optional. Azure Pipeline 'Environment', defaults to 'DEVELOPMENT'
+#       environmentPrefix: <string> variable name for environmentPrefix
+#       explicitTarget: <boolean> optional. When set to true, only builds with directRelease will target this environment
+#       realm: <string> optional. Defaults to DEV.
+#       branchTargets: <string[]>. List of branches that are supported.
+#           Exact match format: refs/heads/<name>, eg refs/heads/develop
+#           Starts with format: ~refs/heads/<name>, eg refs/heads/release
+- name: customStages
+  type: object
+  default: {}
+
+# Specifies user-specified configuration settings to be used in stages (Recommended)
+#   Expecting the following optional parameters
+#   - variablesFolder: <string> represents a relative path within the @self repository that contains
+#                      a set of variables. Each stage in the pipeline will requires a dedicated file
+#                      that aligns to that environment.
+#   - variableGroups: <string> represents a variable group within the Azure DevOps project. Adding
+#                     the key '{{env}}' in the variable group will be replaced by the stage alias
+#                     or stage name. E.g. key-vault-setup - {{env}} -> 'key-vault-setup - prd_east'.
+- name: configParameters
+  type: object
+  default: {}
+
+# Specifies the platform for the cd stages (Optional, defaults to linux)
+- name: deployPlatform
+  type: string
+  default: 'linux'
+  values:
+  - 'windows'
+  - 'linux'
+  - 'cloudhosted-windows-latest'
+
+# Specifies 'type'-specific parameters for the deploy stage (Recommended)
+- name: deployParameters
+  type: object
+  default: {}
+
+# Specifies an open-ended set of optional configuration settings
+#   - excludeStages: <string[]>
+#   - environmentMappings: <object>
+#   - includeBuildStage: <boolean>
+- name: flags
+  type: object
+  default: {}
+
+# User specified global variables for this pipeline
+#   Expecting that users can define variables with:
+#   - template: local-template-path.yml@self
+#   - group: <variable-group-name>
+#   - name: <variable-name>
+#     value: <value>
+- name: variables
+  type: object
+  default: {}
+
+#endregion#####################################################################
+
+#region################### GLOBAL PIPELINE VARIABLES ##########################
+#   These variables are scoped to the pipeline and can be overriden at the
+#   stage/job level. Global variables can define values that use the
+#   macro syntax '$(name)' and their values are resolved at runtime.
+###############################################################################
+variables:
+# define the pipeline type
+- name: Framework.Type
+  value: ${{ parameters.type }}
+- ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+  - name: Framework.PrimaryRegion
+    value: east
+- ${{ else }}:
+  - name: Framework.PrimaryRegion
+    value: central
+# define global system variables
+- template: /devops/pipelines/templates/variables/system-variables.yml
+# apply semantic versioning (requires name: $(version) in external pipeline)
+- template: /devops/pipelines/templates/variables/version-template.yml
+  parameters:
+    buildVersion: ${{ parameters.buildVersion }}
+    majorVersion: ${{ parameters.majorVersion }}
+    minorVersion: ${{ parameters.minorVersion }}
+# include primary azure variables
+- template: /devops/pipelines/templates/variables/azure-variables.yml
+# add user supplied global variables
+- ${{ if ne(parameters.variables, '') }}:
+  - ${{ each set in parameters.variables }}:
+    - ${{ insert }}: ${{ set }}
+#endregion
+
+stages:
+- template: /devops/pipelines/templates/stages/stages.yml
+  parameters:
+    type: ${{ parameters.type }}
+    buildVersion: ${{ parameters.buildVersion }}
+    buildParameters: ${{ parameters.buildParameters }}
+    deployParameters: ${{ parameters.deployParameters }}
+    ${{ if in( parameters.type, 'policy-autopr', 'policy-branch', 'policy-pipelinevalidation', 'wiki-chg-docx', 'wiki-export') }}:
+       resourceKind: build
+    ${{ else }}:
+       resourceKind: ${{ parameters.resourceKind }}
+    variablesFolder: ${{ parameters.configParameters.variablesFolder }}
+    variableGroups: ${{ parameters.configParameters.variableGroups }}
+    ${{ insert }}: ${{ parameters.flags }}
+    stages:
+    ###########################################################################
+    # BUILD STAGE
+    ###########################################################################
+    - ${{ if and( ne( parameters.flags.includeBuildStage, false), not(containsValue( parameters.customStages.*.name, 'build')) ) }}:
+      - name: build
+        displayName: 'BUILD'
+        realm: 'DEV'
+        resourceTargets:
+        - build
+        - realm
+        - realm-family
+        - realm-family-single-region
+        - single-region
+        - dual-region
+
+        # TODO: Remove when pandoc and MarkdownUtil work on linux
+        ${{ if in( parameters.type, 'wiki-export', 'wiki-chg-docx') }}:
+          platform: windows
+        ${{ else }}:
+          platform: ${{ parameters.buildPlatform }}
+
+    #region [PROJECT ENVIRONMENTS] ############################################
+    # DEPLOY - DEV-INT (EDDV1) / DEV Realm
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'dev_int')) }}:
+      - name: dev_int
+        ${{ if eq( parameters.resourceKind, 'realm') }}:
+          displayName: 'DEV'
+          alias: 'dev'
+          ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+            environmentPrefix: 'EDDV'
+          ${{ else }}:
+            environmentPrefix: 'CDDV'
+        ${{ else }}:
+          displayName: 'DEV-INT'
+          ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+            environmentPrefix: 'EDDV1'
+          ${{ else }}:
+            environmentPrefix: 'CDDV1'
+        resourceTargets:
+        - realm
+        - realm-family
+        - realm-family-single-region
+        - single-region
+        - dual-region
+        realm: 'DEV'
+        dependsOn:
+        - build
+        branchTargets:
+        - '~refs/heads/feature/'
+        - '~refs/heads/bugfix/'
+        - 'refs/heads/develop'
+        platform: ${{ parameters.deployPlatform }}
+
+    ###########################################################################
+    # DEPLOY - FT (EDIT1)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'ft')) }}:
+      - name: ft
+        displayName: FT
+        ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+          environmentPrefix: 'EDIT1'
+        ${{ else }}:
+          environmentPrefix: 'CDIT1'
+        realm: 'DEV'
+        resourceTargets:
+        - single-region
+        - dual-region
+        dependsOn:
+        - dev_int
+        branchTargets:
+        - 'refs/heads/develop'
+        - '~refs/heads/release'
+        platform: ${{ parameters.deployPlatform }}
+
+    ###########################################################################
+    # DEPLOY - SIT (EDIT2)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'sit')) }}:
+      - name: sit
+        displayName: 'SIT'
+        ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+          environmentPrefix: 'EDIT2'
+        ${{ else }}:
+          environmentPrefix: 'CDIT2'
+        realm: 'DEV'
+        resourceTargets:
+        - realm-family
+        - realm-family-single-region
+        - single-region
+        - dual-region
+        dependsOn:
+        - ${{ if startsWith( parameters.resourceKind, 'realm-family') }}:
+          - dev_int
+        - ${{ else }}:
+          - ft
+        branchTargets:
+        - refs/heads/develop
+        - ~refs/heads/release
+        platform: ${{ parameters.deployPlatform }}
+
+    ###########################################################################
+    # DEPLOY - UAT (ESUT1) / STG Realm
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'uat')) }}:
+      - name: uat
+        ${{ if eq( parameters.resourceKind, 'realm') }}: # todo: move to ESOT
+          displayName: 'STG'
+          alias: 'stg'
+          ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+            environmentPrefix: 'ESUT'
+          ${{ else }}:
+            environmentPrefix: 'CSUT'
+        ${{ else }}:
+          displayName: 'UAT'
+          ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+            environmentPrefix: 'ESUT1'
+          ${{ else }}:
+            environmentPrefix: 'CSUT1'
+        realm: 'STG'
+        resourceTargets:
+        - realm
+        - realm-family
+        - realm-family-single-region
+        - single-region
+        - dual-region
+        dependsOn:
+        - ${{ if eq( parameters.resourceKind, 'realm') }}:
+          - dev_int
+        - ${{ else }}:
+          - sit
+        branchTargets:
+        - ~refs/heads/release
+        platform: ${{ parameters.deployPlatform }}
+    #endregion#################################################################
+
+    #region [CUSTOM ENVIRONMENTS] ############################################
+    - ${{ each custom in parameters.customStages }}:
+      - name: ${{ custom.name }}
+        displayName: ${{ coalesce( custom.displayName, custom.name )}}
+        environmentName: ${{ custom.environmentName }}
+        environmentPrefix: ${{ custom.environmentPrefix }}
+        explicitTarget: ${{ custom.explicitTarget }}
+        realm: ${{ coalesce( custom.realm, 'DEV') }}
+        resourceTargets:
+        - ${{ parameters.resourceKind }}
+        dependsOn:
+        - ${{ if ne( custom.dependsOn,'') }}:
+          - ${{ custom.dependsOn }}
+        - ${{ elseif ne(parameters.flags.includeBuildStage,false) }}:
+          - 'build'
+        branchTargets:
+        - ${{ custom.branchTargets }}
+        platform: ${{ parameters.deployPlatform }}
+    #endregion#################################################################
+
+    #region [AO ENVIRONMENTS] #################################################
+    # DEPLOY - AO-DEV-INT (EDDV2)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'ao_dev_int')) }}:
+      - name: ao_dev_int
+        displayName: 'AO-DEV-INT'
+        ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+          environmentPrefix: 'EDDV2'
+        ${{ else }}:
+          environmentPrefix: 'CDDV2'
+        realm: 'DEV'
+        resourceTargets:
+        - single-region
+        - dual-region
+        dependsOn:
+        - build
+        branchTargets:
+        - ~refs/heads/ao/feature
+        - ~refs/heads/ao/bugfix
+        - refs/heads/ao/develop
+        platform: ${{ parameters.deployPlatform }}
+
+    ###########################################################################
+    # DEPLOY - AO-FT (EDIT3)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'ao_ft')) }}:
+      - name: ao_ft
+        displayName: 'AO-FT'
+        ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+          environmentPrefix: 'EDIT3'
+        ${{ else }}:
+          environmentPrefix: 'CDIT3'
+        realm: 'DEV'
+        resourceTargets:
+        - single-region
+        - dual-region
+        dependsOn:
+        - ao_dev_int
+        branchTargets:
+        - refs/heads/ao/develop
+        - ~refs/heads/ao/release
+        platform: ${{ parameters.deployPlatform }}
+
+    ###########################################################################
+    # DEPLOY - AO-SIT (EDIT4)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'ao_sit')) }}:
+      - name: ao_sit
+        displayName: 'AO-SIT'
+        ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+          environmentPrefix: 'EDIT4'
+        ${{ else }}:
+          environmentPrefix: 'CDIT4'
+        realm: 'DEV'
+        resourceTargets:
+        - single-region
+        - dual-region
+        dependsOn:
+        - ao_ft
+        branchTargets:
+        - ~refs/heads/ao/release
+        platform: ${{ parameters.deployPlatform }}
+
+    ###########################################################################
+    # DEPLOY - AO-UAT (ESUT2)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'ao_uat')) }}:
+      - name: ao_uat
+        displayName: 'AO-UAT'
+        ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+          environmentPrefix: 'ESUT2'
+        ${{ else }}:
+          environmentPrefix: 'CSUT2'
+        realm: 'STG'
+        resourceTargets:
+        - single-region
+        - dual-region
+        dependsOn:
+        - ao_sit
+        branchTargets:
+        - ~refs/heads/ao/release
+        - ~refs/heads/hotfix
+        platform: ${{ parameters.deployPlatform }}
+
+    #endregion#################################################################
+
+    #region [PERFORMANCE TEST ENVIRONMENTS] ###################################
+    ###########################################################################
+    # DEPLOY - PT - CENTRAL (CSPT1)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'pt_central')) }}:
+      - name: pt_central
+        displayName: 'PT - CENTRAL'
+        environmentPrefix: 'CSPT1'
+        partnerEnvironmentPrefix: 'ESPT1'
+        aliasEnvironmentPrefix: 'GSPT1'
+        realm: 'STG'
+        resourceTargets:
+        - ${{ if eq(parameters.flags.primaryRegion, 'central') }}:
+          - realm-family-single-region
+          - single-region
+        - realm-family
+        - dual-region
+        reasonTargets: "'Manual'"
+        dependsOn:
+        - ${{ if eq(parameters.flags.primaryRegion, 'central') }}: # central is primary
+          - ${{ if in( parameters.resourceKind, 'realm-family','dual-region') }}:
+            - pt_east
+          - ${{ elseif eq(parameters.flags.includeBuildStage, true) }}:
+            - build
+        - ${{ elseif eq(parameters.flags.includeBuildStage, true) }}: # east is primary
+          - build
+        explicitTarget: true
+        branchTargets:
+        - ~refs/heads/release
+        - ~refs/heads/ao/release
+        platform: ${{ parameters.deployPlatform }}
+        location: $(azSecondaryRegion)
+
+    ###########################################################################
+    # DEPLOY - PT - EAST (ESPT1)
+    ###########################################################################
+    - ${{ if not(containsValue(parameters.customStages.*.name, 'pt_east')) }}:
+      - name: pt_east
+        displayName: 'PT - EAST'
+        environmentPrefix: 'ESPT1'
+        partnerEnvironmentPrefix: 'CSPT1'
+        aliasEnvironmentPrefix: 'GSPT1'
+        realm: 'STG'
+        resourceTargets:
+        - ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+          - realm-family-single-region
+          - single-region
+        - realm-family
+        - dual-region
+        reasonTargets: "'Manual'"
+        explicitTarget: true
+        dependsOn:
+        - ${{ if in(parameters.flags.primaryRegion, '', 'east') }}: # east is primary
+          - ${{ if in( parameters.resourceKind, 'realm-family','dual-region') }}:
+            - pt_central
+          - ${{ elseif eq(parameters.flags.includeBuildStage, true) }}:
+            - build
+        - ${{ else }}: # central is primary
+          - ${{ if eq(parameters.flags.includeBuildStage, true) }}:
+            - build
+        branchTargets:
+        - ~refs/heads/release
+        - ~refs/heads/ao/release
+        platform: ${{ parameters.deployPlatform }}
+    #endregion#################################################################
+
+    #region [PRE-PROD ENVIRONMENTS] ###########################################
+    ###########################################################################
+    # DEPLOY - PRE-PROD - CENTRAL (CSOT1)
+    ###########################################################################
+    - name: pre_prd_central
+      displayName: 'PRE-PROD - CENTRAL'
+      environmentName: 'PRE-PRODUCTION' # not overrideable
+      environmentPrefix: 'CSOT1'
+      partnerEnvironmentPrefix: 'ESOT1'
+      aliasEnvironmentPrefix: 'GSOT1'
+      realm: 'STG'
+      resourceTargets:
+      - ${{ if in(parameters.flags.primaryRegion, 'central') }}:
+        - realm-family-single-region
+        - single-region
+      - realm-family
+      - dual-region
+      dependsOn:
+      - ${{ if eq(parameters.flags.primaryRegion, 'central') }}: # central is primary
+        - ${{ if in( parameters.resourceKind, 'realm-family','dual-region') }}:
+          - pre_prd_east
+        - ${{ elseif in( parameters.resourceKind, 'realm-family-single-region') }}:
+          - uat
+        - ${{ else }}: # single-region / dual-region
+          - ao_uat
+          - uat
+      - ${{ else }}: # east is primary (realm-family)
+        - ${{ if eq( parameters.resourceKind, 'realm-family') }}:
+          - uat
+        - ${{ else }}:
+          - ao_uat
+          - uat
+      branchTargets:
+      - ~refs/heads/release
+      - ~refs/heads/ao/release
+      - ~refs/hotfix
+      platform: ${{ parameters.deployPlatform }}
+      location: $(azSecondaryRegion)
+
+    ###########################################################################
+    # DEPLOY - PRE-PROD - EAST (ESOT1)
+    ###########################################################################
+    - name: pre_prd_east
+      displayName: 'PRE-PROD - EAST'
+      environmentName: 'PRE-PRODUCTION' # not overrideable
+      environmentPrefix: 'ESOT1'
+      partnerEnvironmentPrefix: 'CSOT1'
+      aliasEnvironmentPrefix: 'GSOT1'
+      realm: 'STG'
+      resourceTargets:
+      - ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+        - realm-family-single-region
+        - single-region
+      - realm-family
+      - dual-region
+      dependsOn:
+      - ${{ if in(parameters.flags.primaryRegion, '', 'east') }}: # east is primary
+        - ${{ if in( parameters.resourceKind, 'realm-family','dual-region') }}:
+          - pre_prd_central
+        - ${{ elseif in( parameters.resourceKind, 'realm-family-single-region') }}:
+          - uat
+        - ${{ else }}: # single-region / dual-region
+          - ao_uat
+          - uat
+      - ${{ else }}: # central is primary (realm-family/dual-region)
+        - ${{ if eq( parameters.resourceKind, 'realm-family') }}:
+          - uat
+        - ${{ else }}:
+          - ao_uat
+          - uat
+      branchTargets:
+      - ~refs/heads/release
+      - ~refs/heads/ao/release
+      - ~refs/heads/hotfix
+      platform: ${{ parameters.deployPlatform }}
+    #endregion#################################################################
+
+    #region [PROD ENVIRONMENTS] ###############################################
+    ###########################################################################
+    # DEPLOY - PROD - CENTRAL (CPPD1)
+    ###########################################################################
+    - name: prd_central
+      displayName: 'PROD - CENTRAL'
+      environmentName: 'PRODUCTION' # not overrideable
+      environmentPrefix: 'CPPD1'
+      partnerEnvironmentPrefix: 'EPPD1'
+      aliasEnvironmentPrefix: 'GPPD1'
+      realm: 'PRD'
+      resourceTargets:
+      - ${{ if eq(parameters.flags.primaryRegion, 'central') }}:
+        - realm
+        - realm-family-single-region
+        - single-region
+      - realm-family
+      - dual-region
+      dependsOn:
+      - ${{ if eq(parameters.flags.primaryRegion, 'central') }}: # central is primary
+        - ${{ if in( parameters.resourceKind, 'realm-family','dual-region') }}:
+          - prd_east
+        - ${{ elseif in(parameters.resourceKind, 'realm') }}:
+          - uat
+        - ${{ else }}: # realm-family-single-region
+          - pre_prd_central
+      - ${{ else }}: # east is primary (realm-family / dual-region)
+        - pre_prd_east
+      branchTargets:
+      - ~refs/heads/hotfix
+      - ~refs/heads/release
+      - ~refs/heads/ao/release
+      platform: ${{ parameters.deployPlatform }}
+      location: $(azSecondaryRegion)
+
+    ###########################################################################
+    # DEPLOY - PROD - EAST (EPPD1)
+    ###########################################################################
+    - name: prd_east
+      environmentName: 'PRODUCTION' # not overrideable
+      ${{ if eq( parameters.resourceKind, 'realm') }}:
+        displayName: 'PROD'
+        environmentPrefix: 'EPPD'
+      ${{ else }}:
+        displayName: 'PROD - EAST'
+        environmentPrefix: 'EPPD1'
+      realm: 'PRD'
+      resourceTargets:
+      - ${{ if in(parameters.flags.primaryRegion, '', 'east') }}:
+        - realm
+        - realm-family-single-region
+        - single-region
+      - realm-family
+      - dual-region
+      dependsOn:
+      - ${{ if in(parameters.flags.primaryRegion, '', 'east') }}: # east is primary
+        - ${{ if in( parameters.resourceKind, 'realm-family','dual-region') }}:
+          - prd_central
+        - ${{ elseif in(parameters.resourceKind, 'realm') }}:
+          - uat
+        - ${{ else }}: # realm-family-single-region
+          - pre_prd_east
+      - ${{ else }}: # central is primary (realm-family / dual-region)
+        - pre_prd_central
+      branchTargets:
+      - ~refs/heads/hotfix
+      - ~refs/heads/release
+      - ~refs/heads/ao/release
+      platform: ${{ parameters.deployPlatform }}
+    #endregion#################################################################
