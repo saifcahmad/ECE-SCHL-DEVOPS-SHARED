@@ -1,0 +1,85 @@
+#region################### INSTALL PS MODULE ARTIFACT #########################
+# Author: Central DevOps Team
+# Name: manage-nuget-packages-step (STEP TEMPLATE)
+#
+# This step template is used to copy NuGet packages from LCS to ADO artifacts.
+#
+#endregion#####################################################################
+
+parameters:
+# Specify the feed name to retrieve the PowerShell modules.
+- name: feedName
+  type: string
+  default: 'CMHC-SCHL-ERP'
+
+# Specify the scope of the feed with a project Id. If this is set on the organization, set it as an empty string.
+- name: feedProjectId
+  type: string
+  default: '6004e8e5-029e-477b-a043-25dfca720c6b'   # CMHC-SCHL-ERP
+
+# Specify the Module view we wan't to install from the feed. By default, we only install modules Promoted to Release.
+- name: feedView
+  type: string
+  default: 'Release'
+  values:
+  - 'Release'
+  - 'Prerelease'
+  - 'Local'
+
+#region [d365fo App Settings]:::::::::::::::::::::::::::::::::::::::::::::::
+# Specifies the search pattern to find the relevant D365 NuGets
+- name: lcsFileAssetName
+  type: string
+  default: 'PU59*'
+
+# Specifies the name of the service connection to LCS
+- name: lcsServiceConnection
+  type: string
+  default: 'D365LCS-ServiceConnnection_New'
+
+# Specifies the name of the D365 FO project.
+- name: lcsProjectId
+  type: number
+  default: 1228173
+#endregion::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+steps:
+
+# Microsoft Authentication Library(MSAL) needs to isntall on agent to enable authentication with Microsoft Dynamics Lifecycle Services (LCS).
+- task: Dyn365FinOps.dynamics365-finops-tools.finops-installMSALmodule.InstallMSALModule@1
+  displayName: 'Install MSAL.PS to enable authentication'
+
+# Download d365fo nuget packages from LCS
+- task: LCSAssetDownload@1
+  displayName: 'Download NuGet packages from LCS'
+  inputs:
+    serviceConnectionName: ${{ parameters.lcsServiceConnection }}
+    projectId: ${{ parameters.lcsProjectId }}
+    assetPath: '$(Build.ArtifactStagingDirectory)'
+    # Name
+    searchPattern: '1'
+    # NuGet Packages
+    fileAssetType: '27'
+    fileAssetName: ${{ parameters.lcsFileAssetName }}
+
+- pwsh: |
+    (Get-ChildItem -Path $(Build.ArtifactStagingDirectory) -Recurse).FullName
+    Write-Host ("File path {0}" -f $Env:FilePath)
+
+# Publishes Pipeline Artifacts.
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Pipeline Artifacts'
+  condition: succeededOrFailed()
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)\*.nupkg'
+    ArtifactName: 'packages'
+    publishLocation: 'Container'
+
+# - task: NuGetCommand@2
+#   displayName: 'Push nuget package'
+#   inputs:
+#     command: 'push'
+#     packagesToPush: '$(Build.ArtifactStagingDirectory)/*.nupkg;!$(Build.ArtifactStagingDirectory)/*.symbols.nupkg'
+#     nuGetFeedType: 'internal'
+#     publishVstsFeed: ${{ parameters.feedProjectId }}
+#     allowPackageConflicts: true
