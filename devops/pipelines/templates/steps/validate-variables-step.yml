@@ -1,0 +1,85 @@
+#region###################### VALIDATE VARIABLES ##############################
+# Author: Central DevOps Team
+# Name: validate variables (STEP TEMPLATE)
+#
+#   Intended to validate configuration settings passed into a Job
+#
+#   To simplify job templates, Job templates can specify a variable as
+#   a default value. However, no compile-time errors will occur if these
+#   variables have not been defined.
+#
+#   This step template is intended to confirm that global or stage-level
+#   variables have been defined.
+#
+#   Example:
+#
+#   ```
+#   parameters:
+#   - name: serverName
+#     type: string
+#     default: $(azSqlServerName) # typically defined as a global variable
+#
+#   jobs:
+#   - job:
+#     steps:
+#     - template: /devops/pipelines/templates/steps/validate-variables-step.yml@shared
+#       parameters:
+#         requiredVariables:
+#          serverName: ${{ parameters.serverName }}
+#          environmentPrefix: $(environmentPrefix)
+#   ```
+#endregion#####################################################################
+
+parameters:
+# Simple object notation representing key/value pairs
+- name: requiredVariables
+  type: object
+  default: {}
+
+steps:
+
+- ${{ if ne(parameters.requiredVariables, '') }}:
+  - task: PowerShell@2
+    displayName: 'Validate Job Parameters'
+    inputs:
+      targetType: 'inline'
+      pwsh: true
+      script: |
+        $obj = $null
+
+        # report when the requiredVariables is malformed
+        try {
+          $obj = '${{ convertToJson( parameters.requiredVariables ) }}' | ConvertFrom-Json -AsHashtable
+        } catch {
+          $errorMessage = $_.ToString()
+          Write-Host @"
+        Error parsing the required variables for this job. Required variables in json:
+        ${{ convertToJson( parameters.requiredVariables ) }}
+        "@
+          Write-Host "##[error]$errorMessage"
+          Write-Host "##vso[task.logissue type=error]Issue validating required variables."
+          Write-Host "##vso[task.complete result=Failed;]Issue validating required variables."
+          Exit 0
+        }
+
+        [array]$missingKeys = @()
+
+        Write-Host "Validating runtime values for required variables:"
+
+        # find variables that do not have values
+        $obj.GetEnumerator() | ForEach-Object {
+
+          if ([String]::IsNullOrEmpty($_.value) -or $_.value.StartsWith('$(')) {
+            $missingKeys += , $_.key
+            Write-Host "##vso[task.logissue type=error]Required variable $($_.key) does not contain a value."
+          } else {
+            Write-Host ("`t{0}: {1}" -f $_.key, $_.value)
+          }
+        }
+
+        # Report error and stop execution
+        if ($missingKeys) {
+          $keys = $missingKeys -join ','
+          Write-Host "##vso[task.complete result=Failed;]Stage configuration is missing required values: $keys."
+          Exit 0 # Suppress 'PowerShell exited with error code 1'
+        }
