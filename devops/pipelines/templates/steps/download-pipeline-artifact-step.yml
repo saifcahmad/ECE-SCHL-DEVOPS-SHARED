@@ -1,0 +1,73 @@
+#region################### DOWNLOAD PIPELINE ARTIFACT #########################
+# Author: Central DevOps Team
+# Name: download-pipeline-artifact-step (STEP TEMPLATE)
+#
+# This step template is used to download a specific version of a pipeline
+# artifact.
+#endregion#####################################################################
+
+parameters:
+# Specifies the build version to deploy.
+# This runtime parameter allows a previously built artifact to be deployed.
+# NOTE: The build stage will be skipped if buildVersion != current.
+- name: buildVersion
+  type: string
+  default: 'current'
+
+# Specifies the name of the artifact.
+- name: artifactName
+  type: string
+  default: $(artifactName)
+
+# Specifies where to download the pipeline artifact to.
+- name: downloadPath
+  type: string
+  default: '$(Pipeline.Workspace)/$(artifactName)'
+
+steps:
+# If a build version is not supplied, then the current pipeline artifact is downloaded.
+- ${{ if eq(parameters.buildVersion, 'current') }}:
+  - download: ${{ parameters.buildVersion }}
+    displayName: 'Download Pipeline Artifact'
+    artifact: ${{ parameters.artifactName }}
+
+# If a build version is supplied, then a specific pipeline artifact is downloaded.
+- ${{ elseif ne(parameters.buildVersion, 'none') }}:
+  # Retrieves the run id associated with a previous build. This id is used by the subsequent
+  # step to download the accompanying pipeline artifacts.
+  - task: PowerShell@2
+    displayName: 'Acquire Pipeline Run ID'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $url = "https://dev.azure.com/cmhcvsts/$(System.TeamProject)/_apis/build/builds?definitions=$(System.DefinitionId)&buildNumber=${{ parameters.buildVersion }}&queryOrder=queueTimeDescending&api-version=5.1"
+        $result = Invoke-RestMethod -Method Get -Uri $url -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -UseBasicParsing
+        $buildResult = $result.value
+        if ($buildResult) {
+          $buildResult | ForEach-Object {
+            $buildId = $_.id
+            $artifactsUrl = "https://dev.azure.com/cmhcvsts/$(System.TeamProject)/_apis/build/builds/$buildId/artifacts?artifactName=${{ parameters.artifactName }}&api-version=5.1"
+            try {
+              $result = Invoke-RestMethod -Method Get -Uri $artifactsUrl -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -UseBasicParsing
+              if ($result.name -eq "${{ parameters.artifactName }}") {
+                Write-Output "##vso[task.setvariable variable=runId;]$buildId"
+                break
+              }
+            }
+            catch { }
+          }
+        }
+        Write-Error "Could not find Run ID for Build Version (${{ parameters.buildVersion }})."
+
+      pwsh: true
+
+  # Downloads the pipeline artifact based on a run id.
+  - task: DownloadPipelineArtifact@2
+    displayName: 'Download Pipeline Artifact'
+    inputs:
+      source: 'specific'
+      artifact: ${{ parameters.artifactName }}
+      project: $(System.TeamProject)
+      runVersion: 'specific'
+      runId: $(runId)
+      path: ${{ parameters.downloadPath }}
