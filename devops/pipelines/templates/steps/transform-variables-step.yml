@@ -1,0 +1,34 @@
+#region###################### TRANSFORM VARIABLES #############################
+# Author: Central DevOps Team
+# Name: transform variables (STEP TEMPLATE)
+#
+#   Intended to allow slightly more complex expressions for variables
+#
+#   Usage:
+#       variables:
+#         currentYear: 'pwsh: [DateTime]::Now.ToString("yyyy")'
+#
+#endregion#####################################################################
+
+steps:
+- task: PowerShell@2
+  displayName: 'Transform Pipeline Variables'
+  inputs:
+    targetType: 'inline'
+    script: |
+      Get-ChildItem Env:* | % {
+        if ($_.Value.StartsWith("pwsh: ")) {
+          $name  = $_.Name
+          $value = $_.Value
+          try {
+            $result = Invoke-Expression $value.Replace("pwsh: ", "")
+            if ($result -ne $value) {
+              Write-Output "##vso[task.setvariable variable=$name;]$result"
+            }
+          } 
+          catch {
+            Write-Output "##[error]Error transforming variable `"$($name): $value`". Error: $($_.ToString())"
+          }
+        }
+      }
+    pwsh: true
