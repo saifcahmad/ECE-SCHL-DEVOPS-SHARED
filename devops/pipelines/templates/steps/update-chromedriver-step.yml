@@ -1,0 +1,156 @@
+#region###################### TRANSFORM VARIABLES #############################
+# Author: Central DevOps Team
+# Name: update-chromedriver (STEP TEMPLATE)
+#
+#   Used to update chromedriver on a windows machine.
+#
+#endregion#####################################################################
+
+steps:
+
+# TODO: Find a way to upgrade chromedriver in Linux in the future.
+- task: PowerShell@2
+  displayName: 'Update ChromeDriver'
+  inputs:
+    targetType: 'inline'
+    script: |
+      # Enable diagnostic logging
+      if ($env:SYSTEM_DEBUG -eq "true") {
+        $VerbosePreference = "Continue"
+      }
+
+      function Start-DownloadWithRetry
+      {
+          Param
+          (
+              [Parameter(Mandatory)]
+              [string] $Url,
+              [string] $Name,
+              [string] $DownloadPath = "${env:Temp}",
+              [int] $Retries = 5
+          )
+
+          if ([String]::IsNullOrEmpty($Name)) {
+              $Name = [IO.Path]::GetFileName($Url)
+          }
+
+          $filePath = Join-Path -Path $DownloadPath -ChildPath $Name
+          $downloadStartTime = Get-Date
+
+          # Default retry logic for the package.
+          while ($Retries -gt 0)
+          {
+              try
+              {
+                  $downloadAttemptStartTime = Get-Date
+                  Write-Host "Downloading package from: $Url to path $filePath ."
+                  (New-Object System.Net.WebClient).DownloadFile($Url, $filePath)
+                  break
+              }
+              catch
+              {
+                  $failTime = [math]::Round(((Get-Date) - $downloadStartTime).TotalSeconds, 2)
+                  $attemptTime = [math]::Round(((Get-Date) - $downloadAttemptStartTime).TotalSeconds, 2)
+                  Write-Host "There is an error encounterd after $attemptTime seconds during package downloading:`n $_"
+                  $Retries--
+
+                  if ($Retries -eq 0)
+                  {
+                      Write-Host "File can't be downloaded. Please try later or check that file exists by url: $Url"
+                      Write-Host "Total time elapsed $failTime"
+                      exit 1
+                  }
+
+                  Write-Host "Waiting 30 seconds before retrying. Retries left: $Retries"
+                  Start-Sleep -Seconds 30
+              }
+          }
+
+          $downloadCompleteTime = [math]::Round(((Get-Date) - $downloadStartTime).TotalSeconds, 2)
+          Write-Host "Package downloaded successfully in $downloadCompleteTime seconds"
+          return $filePath
+      }
+
+      function Expand-7Zip {
+          Param
+          (
+              [Parameter(Mandatory=$true)]
+              [string]$Path,
+              [Parameter(Mandatory=$true)]
+              [string]$DestinationPath
+          )
+
+          Write-Host "Expand archive '$PATH' to '$DestinationPath' directory"
+          7z.exe x "$Path" -o"$DestinationPath" -y | Out-Null
+
+          if ($LASTEXITCODE -ne 0)
+          {
+              Write-Host "There is an error during expanding '$Path' to '$DestinationPath' directory"
+              exit 1
+          }
+      }
+
+      $ChromeDriverPath = ("{0}\SeleniumWebDrivers\ChromeDriver" -f $env:SystemDrive)
+      if (-not (Test-Path -Path $ChromeDriverPath))
+      {
+          Throw "Chrome driver path not found."
+      }
+
+      Write-Host "Get the Chrome WebDriver and Chrome Versions..."
+      $CurrentChromeDriverVersion = Get-Content -Path $ChromeDriverPath\versioninfo.txt
+
+      $RegistryPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
+      $ChromePath = (Get-ItemProperty "$RegistryPath\chrome.exe").'(default)'
+      [version]$ChromeVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ChromePath).ProductVersion
+      $ChromeBuild = "$($ChromeVersion.Major).$($ChromeVersion.Minor).$($ChromeVersion.Build)"
+      $ChromeDriverVersionsUrl = "https://googlechromelabs.github.io/chrome-for-testing/latest-patch-versions-per-build-with-downloads.json"
+
+      Write-Host "Chrome version is $ChromeVersion"
+      $ChromeDriverVersions = Invoke-RestMethod -Uri $ChromeDriverVersionsUrl
+      $ChromeDriverVersion = $ChromeDriverVersions.builds.$ChromeBuild
+
+      if (-not ($ChromeDriverVersion)) {
+        $availableVersions = $ChromeDriverVersions.builds | Get-Member | Select-Object -ExpandProperty Name
+        Write-Host "Available chromedriver builds are $availableVersions"
+        Throw "Can't determine chromedriver version that matches chrome build $ChromeBuild"
+      }
+
+      Write-Host "Chrome WebDriver version to install is $($ChromeDriverVersion.version)"
+      $ChromeDriverZipDownloadUrl = ($ChromeDriverVersion.downloads.chromedriver | Where-Object platform -eq "win64").url
+
+      $LatestChromeDriverVersion = $ChromeDriverVersion.version
+      $ChromeDriverArchName = "chromedriver-win64.zip"
+
+      $VersionInfoOutput = @"
+      ---------------------------------------------------------------------------
+      Current Chrome version: {0}
+      Current ChromeDriver version: {1}
+      ---------------------------------------------------------------------------
+      Latest ChromeDriver version: {2}
+      ---------------------------------------------------------------------------
+      "@ -f $ChromeVersion, $CurrentChromeDriverVersion, $LatestChromeDriverVersion
+      Write-Host $VersionInfoOutput
+
+      if ($CurrentChromeDriverVersion -eq $LatestChromeDriverVersion){
+          Write-Host "ChromeDriver is already at the latest version."
+      } else {
+          $ChromeDriverVersion.version | Out-File -FilePath "$ChromeDriverPath\versioninfo.txt" -Force;
+
+          Write-Host "ChromeDriver does not have the latest version. Proceeding to update it..."
+          $ChromeDriverArchPath = Start-DownloadWithRetry -Url $ChromeDriverZipDownloadUrl -Name $ChromeDriverArchName
+          Write-Host "Expand Chrome WebDriver archive..."
+          Expand-7Zip -Path $ChromeDriverArchPath -DestinationPath $ChromeDriverPath
+
+          $CurrentChromeDriverVersion = Get-Content -Path $ChromeDriverPath\versioninfo.txt
+          $VersionInfoOutput = @"
+      ----------------------------------------------------------------------------
+      Current Chrome version: {0}
+      Current ChromeDriver version: {1}
+      ----------------------------------------------------------------------------
+      Latest ChromeDriver version: {2}
+      ----------------------------------------------------------------------------
+      "@ -f $ChromeVersion, $CurrentChromeDriverVersion, $LatestChromeDriverVersion
+          Write-Host $VersionInfoOutput
+      }
+    pwsh: true
+  continueOnError: true
