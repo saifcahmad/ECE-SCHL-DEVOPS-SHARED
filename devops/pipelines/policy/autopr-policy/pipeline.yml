@@ -1,0 +1,34 @@
+################################################################################
+# Author: DevOps Central Team
+# Name: Auto-PR (POLICY PIPELINE)
+#
+# Automatically create pull requests to integrate latest from master into develop
+# and other long-lived feature branches.
+#
+################################################################################
+resources:
+  repositories:
+  - repository: shared
+    name: CMHC-SCHL - DEVOPS/CMHC-SCHL-DEVOPS-SHARED
+    type: git
+    ref: main
+
+trigger:
+  branches:
+    include:
+    - main
+
+extends:
+  template: /devops/pipelines/templates/pipeline.yml@shared
+  parameters:
+    type: policy-autopr
+    buildParameters:
+      # list of supported branches
+      branchInfo:
+
+      # automatically create a pull request to merge
+      # from master into develop. create a work-item and
+      # add it to the backlog for the 'CMHC-SCHL - DevOps Team'
+      # team
+      - branch: develop
+        team: 'CMHC-SCHL - DevOps Team'
