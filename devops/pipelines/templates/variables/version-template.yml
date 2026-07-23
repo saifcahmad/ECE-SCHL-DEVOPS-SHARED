@@ -1,0 +1,58 @@
+#region####################### VERSION-TEMPLATE ###############################
+# Author: Central DevOps Team
+# Name: version-template (VARIABLES TEMPLATE)
+#
+# Calculates the variable $(version) as a SemVer version number (major.minor.patch)
+# 
+# - Manual or Continuous Integration pipeline runs will increment only 
+#   the patch number
+#
+# - Pull Request pipeline runs will increment a pre-release artifact number
+#   assuming that pull request artifacts are non-deterministic and should be
+#   treated separately from reusable versions
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+parameters:
+
+# Specifies the build artifact version number to use.
+#   The default value 'current' will construct a new build artifact.
+#   Specifing a version number (eg 1.0.5) will set the version number for this pipeline run
+- name: buildVersion
+  type: string
+  default: 'current'
+
+# Specifies the major version number to use
+#   Pipelines that want to control their major version number can override the default major version.
+#   Alternatively, this value can be set with a compile-time global variable $(majorVersion)
+- name: majorVersion
+  type: string
+  default: $[ coalesce( variables['majorVersion'], 0) ]
+
+# Specifies the major version number to use
+#   Pipelines that want to control their minor version number can override the default major version.
+#   Alternatively, this value can be set with a compile-time global variable $(minorVersion)
+- name: minorVersion
+  type: string
+  default: $[ coalesce( variables['minorVersion'], 0) ]
+
+#endregion#####################################################################
+
+variables:
+  major: ${{ parameters.majorVersion }}
+  minor: ${{ parameters.minorVersion }}
+
+  # Calculate the patch number
+  # - Manual or CI: use a counter for the current major.minor
+  # - PR: use a prerelease tag (major.minor.0-<PR>.<attempt>)
+  # TODO: Treat Schedule, BuildCompletion and ResourceTrigger as the same as manual/ci?
+  ${{ if in(variables['Build.Reason'], 'Manual','IndividualCI') }}:
+    patch: $[ counter(format('{0}.{1}', variables['major'], variables['minor']), 1)]
+  ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+    patch: $[ format('0-{0}.{1}', variables['System.PullRequest.PullRequestId'], counter(variables['System.PullRequest.PullRequestId'],1) )]
+
+  # Set the version number
+  ${{ if eq( parameters.buildVersion, 'current') }}:
+    version: $[ format('{0}.{1}.{2}', variables['major'], variables['minor'], variables['patch'] )]
+  ${{ else }}:
+    version: ${{ parameters.buildVersion }}
