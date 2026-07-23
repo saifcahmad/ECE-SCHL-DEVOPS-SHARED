@@ -1,0 +1,244 @@
+#region################### INSTALL PS MODULE ARTIFACT #########################
+# Author: Central DevOps Team
+# Name: manage-powershell-modules-step (STEP TEMPLATE)
+#
+# This step template is used to register the ADO artifacts feed to the build agent's PS Repository.
+# This step will also be able to install and uninstall modules needed.
+#
+# For more information on PowerShell artifact feed:
+# Link: https://learn.microsoft.com/en-us/azure/devops/artifacts/tutorials/private-powershell-library
+#
+# Note:
+# - Project Collection Build Service needs access to the feed.
+# - Make sure you use PowerShell Core in the build agents.
+# - If no module version is specified, the latest module with views that match the specified 'feedView' parameter will be imported.
+# - Modules in the feed with views that doesn't match the specified 'feedView' won't be imported, even when the version is specified.
+# - Unlisted modules in the feed with views that match the specified 'feedView' won't be imported UNLESS the version is specified.
+#
+#
+# Example:
+#   - template: /devops/pipelines/templates/steps/manage-powershell-modules-step.yml@shared
+#     parameters:
+#       modules:
+#       - name: AzDevOpsHelper
+#       - name: Pipeworks.Database
+#         version: 1.0.0
+#       - name: ImportExcel
+#         upstream: true
+#
+#endregion#####################################################################
+
+parameters:
+# Specify the feed name to retrieve the PowerShell modules.
+- name: feedName
+  type: string
+  default: 'CMHC-SCHL-DevOps' # Change to the official DevOps Org
+
+# Specify the scope of the feed with a project Id. If this is set on the organization, set it as an empty string.
+- name: feedProjectId
+  type: string
+  default: 'e62dad30-db00-44c3-8288-91ea35be33fc'   # CMHC-SCHL - DevOps
+
+# Specify the Module view we wan't to install from the feed. By default, we only install modules Promoted to Release.
+- name: feedView
+  type: string
+  default: 'Release'
+  values:
+  - 'Release'
+  - 'Prerelease'
+  - 'Local'
+
+# Specify the PowerShell modules to install from the feed.
+# E.g.
+# modules:
+# - name: xxxx
+# - name: yyyy
+#   version: 1.0.5
+- name: modules
+  type: object
+
+# Specify if we install or uninstall the modules.
+- name: action
+  type: string
+  default: 'install'
+  values:
+  - 'install'
+  - 'uninstall'
+
+- name: condition
+  type: string
+  default: ""
+
+steps:
+
+- ${{ if eq(parameters.action, 'install') }}:
+  - task: PowerShell@2
+    displayName: 'Install PowerShell Modules'
+    retryCountOnTaskFailure: 1    # Very effective transient error handler
+    ${{ if parameters.condition }}:
+      condition: ${{ parameters.condition }}
+    inputs:
+      targetType: 'inline'
+      script: |
+        if ('$(System.Debug)' -eq 'true'){
+          $VerbosePreference = "Continue"
+        }
+
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        if ($IsLinux) {
+          # Needed by Register-PSRepository. The linux build agents doesn't have the Credential Provider installed.
+          Invoke-Expression "& { $(Invoke-RestMethod https://aka.ms/install-artifacts-credprovider.ps1) }"
+        }
+
+        try {
+          $adoRepositoryName = "CMHCPowershellAzureDevOpsFeed" # The PowerShell repository name we will provide for the registration.
+
+          # Register PS Repository
+
+          if (-not (Get-PSRepository | Where-Object { $_.name -eq "$adoRepositoryName" })){
+            $feedUrlEndpoint = ($Env:VSS_NUGET_EXTERNAL_FEED_ENDPOINTS | ConvertFrom-Json).endpointCredentials.endpoint
+
+            # We need to register this feed to Nuget in order to install modules in the same task. See https://github.com/OneGet/oneget/issues/403
+            Write-Host "Registering PackageSource."
+            Register-PackageSource -Name "$adoRepositoryName" -Location $feedUrlEndpoint -ProviderName NuGet -SkipValidate -Trusted | Out-Null
+
+            Write-Host "Registering PSRepository."
+            Register-PSRepository -Name "$adoRepositoryName" -SourceLocation $feedUrlEndpoint -PublishLocation $feedUrlEndpoint -InstallationPolicy Trusted | Out-Null
+          }
+          else {
+            Write-Host "'$adoRepositoryName' in already registered in the PackageSource and PSRepository."
+          }
+
+          # Authentication
+
+          # Somehow the credentials are needed in the Linux build agents due to this bug: https://github.com/PowerShell/PowerShellGetv2/issues/661
+          $patToken = "$(System.AccessToken)" | ConvertTo-SecureString -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential("cmhcvsts@cmhc-schl.gc.ca", $patToken)
+
+          # Install Modules
+
+          foreach($module in ('${{ convertToJson( parameters.modules ) }}' | ConvertFrom-Json)) {
+
+            $sharedParams = @{
+              Name = $module.name
+              Force = $true
+            }
+
+            if ($module.version){
+              $sharedParams.RequiredVersion = $module.version
+            }
+
+            if ("${{ parameters.feedView }}" -eq "Prerelease"){
+              $sharedParams.AllowPrerelease = $true
+            }
+
+            if (-not $module.upstream) {
+              $sharedParams.Credential = $credential
+              $targetRepository = $adoRepositoryName
+            }
+            else {
+              $targetRepository = "PSGallery"
+            }
+
+            $moduleVersion = Find-Package @sharedParams -Source $targetRepository | Select-Object -First 1 -ExpandProperty Version
+            Write-Host "Installing '$($module.name)' on version '$moduleVersion' ..."
+
+            Install-Module @sharedParams -Repository $targetRepository -SkipPublisherCheck -AcceptLicense
+
+            # Display installed modules when enabling system diagnostics on the pipeline.
+            Write-Verbose "Current module '$($module.name)' installed:"
+            Get-Module -Name $module.name -ListAvailable | Select-Object Name, Version, RepositorySourceLocation | Out-String | Write-Verbose
+
+            $moduleVersionOutput = if ($module.version) { $module.version } else { 'latest' }
+            Write-Host ("##vso[task.setvariable variable=Framework.InstalledPowerShellModules.{0}.{1}]true" -f $module.name, $moduleVersionOutput)
+          }
+        }
+        catch {
+          $errMsgs = @("Unable to install required PowerShell Module.", $_.Exception.Message, $_.Exception.StackTrace)
+          $errMsgs | ForEach-Object {
+            if ($_){
+              Write-Host "##vso[task.logissue type=error;]$_"
+            }
+          }
+          Write-Host "##vso[task.complete result=Failed;]$($errMsgs[0])"
+          Exit 0
+        }
+        finally {
+          Write-Host "Unregistering '$adoRepositoryName' from the PackageSource and PSRepository."
+          Get-PSRepository -WarningAction SilentlyContinue | Where-Object { $_.name -eq $adoRepositoryName } | Unregister-PSRepository | Out-Null
+          Get-PackageSource -WarningAction SilentlyContinue | Where-Object { $_.name -eq $adoRepositoryName } | Unregister-PackageSource | Out-Null
+        }
+      pwsh: true
+    env:
+      # This environment variable passes the credentials to the credential provider.
+      ${{ if parameters.feedProjectId }}:
+        VSS_NUGET_EXTERNAL_FEED_ENDPOINTS: |
+          {
+            "endpointCredentials":[
+              {
+                "endpoint":"https://pkgs.dev.azure.com/cmhcvsts/${{ parameters.feedProjectId }}/_packaging/${{ parameters.feedName }}@${{ parameters.feedView }}/nuget/v2",
+                "username":"cmhcvsts@cmhc-schl.gc.ca",
+                "password":"$(System.AccessToken)"
+              }
+            ]
+          }
+      ${{ else }}:
+        VSS_NUGET_EXTERNAL_FEED_ENDPOINTS: |
+          {
+            "endpointCredentials":[
+              {
+                "endpoint":"https://pkgs.dev.azure.com/cmhcvsts/_packaging/${{ parameters.feedName }}@${{ parameters.feedView }}/nuget/v2",
+                "username":"cmhcvsts@cmhc-schl.gc.ca",
+                "password":"$(System.AccessToken)"
+              }
+            ]
+          }
+
+- ${{ elseif eq(parameters.action, 'uninstall') }}:
+  - task: PowerShell@2
+    displayName: 'Uninstall PowerShell Modules'
+    retryCountOnTaskFailure: 1    # Very effective transient error handler
+    ${{ if parameters.condition }}:
+      condition: ${{ parameters.condition }}
+    ${{ else }}:
+      condition: always()
+    inputs:
+      targetType: 'inline'
+      script: |
+        # Uninstall Modules
+
+        foreach($module in ('${{ convertToJson( parameters.modules ) }}' | ConvertFrom-Json)) {
+          try{
+            if ($module.version){
+              Write-Host "Uninstalling module '$($module.name)' with version '$($module.version)'..."
+              $moduleToUninstall = Get-InstalledModule -Name $module.name -RequiredVersion $module.version -AllowPrerelease -ErrorAction SilentlyContinue
+              if (-not $moduleToUninstall) {
+                throw "Unable to uninstall PowerShell Module '$($module.name)' with version '$($module.version)' in this build agent."
+              }
+            }
+            else {
+              Write-Host "Uninstalling module '$($module.name)'..."
+              $moduleToUninstall = Get-InstalledModule -Name $module.name -AllVersions -AllowPrerelease -ErrorAction SilentlyContinue
+              if (-not $moduleToUninstall) {
+                throw "Unable to uninstall PowerShell Module '$($module.name)' in this build agent."
+              }
+            }
+            $moduleToUninstall | Uninstall-Module -Force
+
+            $moduleVersionOutput = if ($module.version) { $module.version } else { 'latest' }
+            Write-Host ("##vso[task.setvariable variable=Framework.InstalledPowerShellModules.{0}.{1}]false" -f $module.name, $moduleVersionOutput)
+          }
+          catch {
+            $errMsgs = @($_.Exception.Message, $_.Exception.StackTrace)
+            $errMsgs | ForEach-Object {
+              if ($_){
+                Write-Host "##vso[task.logissue type=warning;]$_"
+              }
+            }
+            Write-Host "##vso[task.complete result=SucceededWithIssues;]$($errMsgs[0])"
+          }
+        }
+
+        Exit 0
+      pwsh: true
