@@ -1,0 +1,70 @@
+[
+  {
+    "id": 2103,
+    "name": "managed-pipeline-test",
+    "folder": "\\incubator",
+    "enabled": true,
+    "repositoryId": "1f4ff1bb-8979-4321-aa59-28bef46dc7df",
+    "stages": [
+      "BUILD",
+      "DEV-INT",
+      "FT",
+      "SIT",
+      "UAT",
+      "AO-DEV-INT",
+      "AO-FT",
+      "AO-SIT",
+      "AO-UAT",
+      "PT - CENTRAL",
+      "PT - EAST",
+      "PRE-PROD - CENTRAL",
+      "PRE-PROD - EAST",
+      "PROD - CENTRAL",
+      "PROD - EAST"
+    ],
+    "pathIncludes": [
+      "/devops/pipelines/incubator/managed-pipeline-test/*"
+    ]
+  },
+  {
+    "id": 2497,
+    "name": "CMHC-SCHL-DEVOPS-SHARED-auto-pr-policy",
+    "folder": "\\policy",
+    "enabled": true,
+    "repositoryId": "1f4ff1bb-8979-4321-aa59-28bef46dc7df",
+    "category": "policy",
+    "stages": [
+      "BUILD"
+    ],
+    "pathIncludes": []
+  },
+  {
+    "id": 2229,
+    "name": "CMHC-SCHL-DEVOPS-SHARED-pipelinevalidation-policy",
+    "folder": "\\policy",
+    "enabled": true,
+    "repositoryId": "1f4ff1bb-8979-4321-aa59-28bef46dc7df",
+    "stages": [
+      "BUILD"
+    ],
+    "pathIncludes": [
+      "/devops/pipelines/policy/pipelinevalidation/*"
+    ]
+  },
+  {
+    "id": 2197,
+    "name": "CMHC-SCHL-DEVOPS-SHARED-repository-policy",
+    "folder": "\\policy",
+    "enabled": true,
+    "repositoryId": "1f4ff1bb-8979-4321-aa59-28bef46dc7df",
+    "stages": [
+      "BUILD"
+    ],
+    "pathIncludes": [
+      "/devops/policy/*",
+      "/.ado/policy/*",
+      "/.ado/branch-policy/*",
+      "/devops/pipelines/policy/branch-policy/*"
+    ]
+  }
+]
