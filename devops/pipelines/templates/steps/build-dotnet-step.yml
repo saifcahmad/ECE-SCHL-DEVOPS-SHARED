@@ -1,0 +1,344 @@
+###############################################################################
+# Author: Central DevOps Team
+# Name: build-dotnet-step (STEP TEMPLATE)
+#
+# This step template is used to build a .NET/dotnet core project.
+# This template includes unit tests and SonarQube scans as well.
+###############################################################################
+
+#region########################## PARAMETERS ##################################
+parameters:
+
+#region [General] :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Specifies the source path of the dotnet project to build.
+- name: sourcePath
+  type: string
+  default: $(sourcePath)
+
+# Solution file name of csproj file name.
+- name: solutionName
+  type: string
+  default: '**/*.csproj'
+
+# Specify the build type. Options are DotNetCore or MSBuild.
+- name: buildType
+  type: string
+  default: DotNetCore
+
+# Specify the build configuration type. Options are Debug or Release.
+- name: buildConfiguration
+  type: string
+  default: 'Release'
+
+# The dotnet version to use to build the project. If not specified, no NuGet will be installed or used.
+- name: nugetVersion
+  type: string
+  default: '6.0.x'
+
+# Change the build output, usefull if you want to package your build in the staging directory.
+- name: changeBuildOutput
+  type: boolean
+  default: false
+
+# Applicable if changeBuildOutput is true. Zip the build/publish output in the artifacts. Usefull if you need to modify these files.
+- name: zipOutput
+  type: boolean
+  default: true
+
+# Applicable if changeBuildOutput is true. The output directory name to publish the artifacts under $(Build.ArtifactStagingDirectory)
+- name: outputDirectoryName
+  type: string
+  default: '$(Build.DefinitionName)'
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [MSBuild] :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Provide the arguments for the MSBuild command.
+# See: https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-command-line-reference?view=vs-2022
+- name: msBuildArguments
+  type: string
+  default: >-
+    /p:Platform="Any CPU"
+
+# Specify if this is a console or website project.
+# Used to package the build properly.
+- name: isWebsiteProject
+  type: boolean
+  default: false
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [DotNet Core] :::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# The dotnet version to use to build the project.
+- name: dotnetVersion
+  type: string
+  default: '6.0.102'
+
+# Provide the arguments for the dotnet command.
+# See: https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-publish
+- name: dotnetBuildArguments
+  type: string
+  default: >-
+    --framework "net6.0"
+    --runtime "linux-x64"
+
+# Add additional dotnet core build configurations.
+- name: dotnetBuildConfig
+  type: object
+  default:
+    publishWebProjects: false
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [Tests and SonarQube Scan] ::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Specifies if unit tests should be ran to the project.
+- name: unitTestsEnabled
+  type: boolean
+  default: true
+
+# Specifies if code coverage should be ran to the project.
+- name: codeCoverageEnabled
+  type: boolean
+  default: true
+
+# Specifies if SonarQube should be used to scan the project.
+- name: sonarScanEnabled
+  type: boolean
+  default: true
+
+# The SonarQube Service Connection to use.
+- name: sonarQubeServiceConnection
+  type: string
+  default: 'SonarQubeServiceConnection'
+
+# Specifies the SonarQube name used for the build's project on the server
+- name: sonarQubeProjectName
+  type: string
+  default: '$(projectNameLowercase)::$(Build.DefinitionName)'
+
+# Specifies the project key associated with the build.
+- name: sonarQubeProjectKey
+  type: string
+  default: '$(projectNameLowercase)::$(Build.DefinitionName)'
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#endregion#####################################################################
+
+steps:
+
+# Pre build setup
+
+- ${{ if parameters.nugetVersion }}:
+
+  # Install the Nuget too and do a Nuget restore.
+  - task: NuGetToolInstaller@1
+    displayName: 'Use NuGet ${{ parameters.nugetVersion }}'
+    inputs:
+      versionSpec: ${{ parameters.nugetVersion }}
+      checkLatest: true
+
+- ${{ if eq(lower(parameters.buildType), 'dotnetcore') }}:
+
+  # Install the dotnet tool.
+  - task: UseDotNet@2
+    displayName: 'Use DotNet ${{ parameters.dotNetVersion }}'
+    inputs:
+      version: ${{ parameters.dotNetVersion }}
+      includePreviewVersions: false
+
+- task: NuGetCommand@2
+  displayName: 'NuGet restore'
+  inputs:
+    restoreSolution: '${{ parameters.sourcePath }}/**/*.sln'
+
+- ${{ if parameters.sonarScanEnabled }}:
+
+  # Prepares SonarQube Analysis.
+  - task: SonarQubePrepare@5
+    displayName: 'Prepare SonarQube Analysis'
+    inputs:
+      sonarQube: ${{ parameters.sonarQubeServiceConnection }}
+      scannerMode: 'MSBuild'
+      projectKey: ${{ parameters.sonarQubeProjectKey }}
+      projectName: ${{ parameters.sonarQubeProjectName }}
+      ${{ if parameters.unitTestsEnabled }}:
+        extraProperties: |
+          sonar.cs.opencover.reportsPaths=$(Agent.TempDirectory)/*/coverage.opencover.xml
+          sonar.cs.vstest.reportsPaths=$(Agent.TempDirectory)/test-results.trx
+          sonar.cs.vscoveragexml.reportsPaths=**/*.coveragexml
+          sonar.exclusions=**/*.xml
+          sonar.test.exclusions=**/*.xml
+          SONAR_SCANNER_OPTS='-Xmx4096m -XX:ReservedCodeCacheSize=128m'
+      ${{ else }}:
+        extraProperties: |
+          sonar.verbose=true
+
+# Build using dotnet core
+
+- ${{ if eq(lower(parameters.buildType), 'dotnetcore') }}:
+
+  # Start the dotnet core build.
+  - task: DotNetCoreCLI@2
+    displayName: 'Restore .NET Application'
+    inputs:
+      command: restore
+      projects: '${{ parameters.sourcePath }}/${{ parameters.solutionName }}'
+      feedsToUse: 'select'
+      includeNuGetOrg: true
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Publish .NET Application'
+    inputs:
+      command: publish
+      ${{ if not(parameters.changeBuildOutput) }}:
+        arguments: >-
+          ${{ parameters.dotnetBuildArguments }}
+          --configuration "${{ parameters.buildConfiguration }}"
+          --self-contained "true"
+          --output "$(Agent.TempDirectory)/$(Build.DefinitionName)"
+      ${{ else }}:
+        arguments: >-
+          ${{ parameters.dotnetBuildArguments }}
+          --configuration "${{ parameters.buildConfiguration }}"
+      projects: '${{ parameters.sourcePath }}/${{ parameters.solutionName }}'
+      publishWebProjects: ${{ coalesce(parameters.dotnetBuildConfig.publishWebProjects, 'false') }}
+      zipAfterPublish: false
+      modifyOutputPath: true
+
+  - ${{ if parameters.unitTestsEnabled }}:
+
+    # We need to publish the coverage in both format (cobertura & opencover) since SonarQube can't read cobertura, but opencover.
+    - task: DotNetCoreCLI@2
+      displayName: 'Test .NET Application'
+      inputs:
+        command: 'test'
+        projects: '${{ parameters.sourcePath }}/${{ parameters.solutionName }}'
+        arguments: >-
+          ${{ parameters.dotnetBuildArguments }}
+          --logger "trx;LogFileName=test-results.trx"
+          --collect:"XPlat Code Coverage"
+          -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura,opencover
+        publishTestResults: true
+
+# Build using MSBuild
+
+- ${{ else }}:
+
+  - task: VSBuild@1
+    displayName: 'MSBuild - Build Solution'
+    inputs:
+      solution: '${{ parameters.sourcePath }}/${{ parameters.solutionName }}'
+      ${{ if not(parameters.changeBuildOutput) }}:
+        msbuildArgs: >-
+          ${{ parameters.msBuildArguments }}
+          /p:Configuration=${{ parameters.buildConfiguration }}
+          /p:OutputPath="$(Agent.TempDirectory)/$(Build.DefinitionName)"
+      ${{ else }}:
+        msbuildArgs: >-
+          ${{ parameters.msBuildArguments }}
+          /p:Configuration=${{ parameters.buildConfiguration }}
+
+  - ${{ if parameters.unitTestsEnabled }}:
+
+    - task: VSTest@3
+      displayName: 'VsTest - Test Solution'
+      inputs:
+        testAssemblyVer2: |
+          **\*test*.dll
+          !**\*TestAdapter.dll
+          !**\obj\**
+        searchFolder: '${{ parameters.sourcePath }}'
+        codeCoverageEnabled: true
+        otherConsoleOptions: '/collect:"Code Coverage;Format=Cobertura"'
+        resultsFolder: '$(Agent.TempDirectory)/Result'
+
+    - ${{ if parameters.codeCoverageEnabled }}:
+
+      # TODO: Test this using MSBuild.
+      - task: PowerShell@2
+        displayName: 'Rename Coverage File'
+        inputs:
+          targetType: 'inline'
+          script: |
+            Rename-Item -Path "$(Agent.TempDirectory)/**/*.coverage" -NewName $(Agent.TempDirectory)/Result/coverage.cobertura.xml
+          pwsh: true
+
+# Publish Test and Scan
+
+- ${{ if parameters.unitTestsEnabled }}:
+
+  - ${{ if parameters.codeCoverageEnabled }}:
+
+    # Publish Code Coverage Results
+    # Publishes the code coverage results collected in the previous step to Azure DevOps.
+    # Once the results are published, the 'Code Coverage' tab on the pipeline results page is visible.
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish code coverage'
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: $(Agent.TempDirectory)/*/coverage.cobertura.xml
+        failIfCoverageEmpty: true
+
+- ${{ if parameters.sonarScanEnabled }}:
+
+  # Runs the SonarQube scanner and publishes the results to the SonarQube server.
+  - task: SonarQubeAnalyze@5
+    displayName: 'Run SonarQube Analysis & Publish Results'
+
+  # Publish SonarQube's Quality Gate Result
+  - task: SonarQubePublish@5
+    displayName: 'Publish SonarQube Quality Gate Result'
+    continueOnError: true
+    inputs:
+      pollingTimeoutSec: '300'
+
+# Move to Archive Folder
+
+# We either zip the build or leave all the files under the Artifact Staging Directory
+- ${{ if not(parameters.changeBuildOutput) }}:
+
+  - ${{ if parameters.zipOutput }}:
+
+    - ${{ if and(parameters.isWebsiteProject, eq(lower(parameters.buildType), 'msbuild'))  }}:
+
+      - task: PowerShell@2
+        displayName: 'Get Published Website Path'
+        inputs:
+          targetType: 'inline'
+          script: |
+            $publishedPath = "$(Agent.TempDirectory)/$(Build.DefinitionName)/_PublishedWebsites/"
+
+            if (-not (Test-Path -Path $publishedPath)) {
+              $errorMessage = "Published Websites path not found: $publishedPath"
+              Write-Host "##vso[task.logissue type=error;]$errorMessage"
+              Write-Host "##vso[task.complete result=Failed;]$errorMessage"
+              Exit 0
+            }
+
+            $publishedDirectory = (Get-ChildItem -Path $publishedPath -Directory | Select-Object -First 1).FullName
+            Write-Host ("##vso[task.setvariable variable=publishedDirectory]$publishedDirectory")
+          pwsh: true
+
+    - task: ArchiveFiles@2
+      displayName: 'Compressing Build Output'
+      inputs:
+        # MSBuild output the website bin files under _PublishedWebsites.
+        ${{ if and(parameters.isWebsiteProject, eq(lower(parameters.buildType), 'msbuild'))  }}:
+          rootFolderOrFile: '$(publishedDirectory)'
+        ${{ else }}:
+          rootFolderOrFile: '$(Agent.TempDirectory)/$(Build.DefinitionName)'
+        archiveType: 'zip'
+        archiveFile: $(Build.ArtifactStagingDirectory)/${{ coalesce(parameters.outputDirectoryName, variables['Build.DefinitionName']) }}.zip
+        includeRootFolder: false
+
+  - ${{ else }}:
+
+    - task: CopyFiles@2
+      displayName: 'Copy Build Output to Artifact Staging'
+      inputs:
+        # MSBuild output the website bin files under _PublishedWebsites.
+        ${{ if and(parameters.isWebsiteProject, eq(lower(parameters.buildType), 'msbuild'))  }}:
+          SourceFolder: '$(publishedDirectory)'
+        ${{ else }}:
+          SourceFolder: '$(Agent.TempDirectory)/$(Build.DefinitionName)'
+        TargetFolder: $(Build.ArtifactStagingDirectory)/${{ coalesce(parameters.outputDirectoryName, variables['Build.DefinitionName']) }}
+        CleanTargetFolder: true
+        OverWrite: true
+        preserveTimestamp: true
