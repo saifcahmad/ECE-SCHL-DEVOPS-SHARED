@@ -1,0 +1,82 @@
+#region########## APPLICATION INSIGHTS DEPLOYMENT ANNOTATION ##################
+# Author: Central DevOps Team
+# Name: applicaiton-insights-annotation-step (STEP TEMPLATE)
+#
+# This step template sends a Deployment Annotation to Application Insights to
+# provide traceability of deployments into Azure.
+#endregion#####################################################################
+parameters:
+# Specifies the ARM Template Service Connection
+- name: azureSubscription
+  type: string
+
+# Resource group name for Application Insights
+- name: applicationInsightsResourceGroupName
+  type: string
+  default: $(applicationInsightsResourceGroupName)
+
+# Application Insights instance name
+- name: applicationInsightsName
+  type: string
+  default: $(applicationInsightsName)
+
+# Specifies whether the annotation is enabled
+- name: enabled
+  type: boolean
+  default: true
+
+steps:
+- ${{ if eq( parameters.enabled, true) }}:
+  #PowerShell script to create release annotations
+  - task: AzureCLI@2
+    displayName: 'Create App Insights Annotation'
+    condition: and(succeeded(), ne(variables['applicationInsightsName'],'') )
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        # enable diagnostic logging
+        if ($env:SYSTEM_DEBUG -eq "true") {
+          $VerbosePreference = "Continue"
+        }
+
+        # fetch the subscriptionid
+        $accounts = az account show | ConvertFrom-Json
+        $activeAccount = $accounts | Where-Object { $_.isDefault -eq $true }
+        if ($activeAccount) {
+          Write-Verbose "Obtained subscription $($activeAccount.name)"
+          $subscriptionId = $activeAccount.id
+
+          Write-Verbose "Using subscription $subscriptionId"
+        }
+
+        # The resource ID to the target Application Insights resource
+        $aiResourceId = "/subscriptions/$subscriptionId/resourceGroups/${{ parameters.applicationInsightsResourceGroupName }}/providers/microsoft.insights/components/${{ parameters.applicationInsightsName }}"
+
+        # setup annotation properties
+        $releaseProperties = @{
+            "ReleaseDescription"="$(Build.DefinitionName)-v$(version)";
+            "TriggerBy"="$(Build.RequestedFor)";
+            "BuildNumber"="$(Build.BuildNumber)";
+            "BuildRepositoryName"="$(Build.Repository.Name)";
+            "BuildRepositoryProvider"="$(Build.Repository.Provider)";
+            "DeploymentUri"="$(System.TeamFoundationCollectionUri)/$(System.TeamProject)/_build?buildId=$(Build.BuildId)";
+            "SourceBranch"="$(Build.SourceBranch)"
+          }
+
+        # setup annotation
+        $annotation = @{
+          Id = [GUID]::NewGuid();
+          AnnotationName = "$(Build.DefinitionName)"
+          EventTime = (Get-Date).ToUniversalTime().GetDateTimeFormats("s")[0];
+          Category = "Deployment";
+          Properties = ConvertTo-Json $releaseProperties -Compress
+        }
+        Write-Verbose ("Annotation Details:`n{0}" -f ($annotation | Out-String))
+
+        $body = (ConvertTo-Json $annotation -Compress) -replace '(\\+)"', '$1$1"' -replace "`"", "`"`""
+        Write-Verbose ("Encoded body:`n{0}" -f $body)
+
+        # send annotation to App Insights
+        az rest --method put --uri "$aiResourceId/Annotations?api-version=2015-05-01" --body "$body "
