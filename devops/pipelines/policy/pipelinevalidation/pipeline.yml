@@ -1,0 +1,29 @@
+#region########################### PIPELINE ###################################
+# Author: Central DevOps Team
+# Name: <REPOSITORY_NAME>-pipelinevalidation-policy (PIPELINE)
+#
+# Validate changes to DevOps files
+#endregion#####################################################################
+resources:
+  repositories:
+  - repository: shared    # We need to specify the shared repository since it is required by the template.
+    type: git
+    name: CMHC-SCHL - DEVOPS/CMHC-SCHL-DEVOPS-SHARED
+    ref: main
+
+name: $(version)
+
+trigger: none # triggered by Pull Request
+
+extends:
+  template: /devops/pipelines/templates/pipeline.yml@shared
+  parameters:
+    type: policy-pipelinevalidation
+    buildParameters:
+      pipelineCache: /devops/pipelines/policy/pipelinevalidation/pipeline-cache.json
+      includeArmTemplateTests: true
+      pesterTestsExclusions:
+      # ignore ARM template tests that take parameters
+      - tests/azuredeploy.tests.ps1
+      pipelineExclusions:
+      - managed-pipeline-test # used from unit tests, will fail validation when new changes are added
