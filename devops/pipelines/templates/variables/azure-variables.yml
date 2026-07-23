@@ -1,0 +1,25 @@
+#region####################### SYSTEM VARIABLES ###############################
+# Author: Central DevOps Team
+# Name: azure variables (VARIABLES TEMPLATE)
+#
+#   Contains azure specific variables. Only included in azure-* jobs
+#
+#endregion#####################################################################
+
+variables:
+
+# Specifies the Azure AD tenant Id of azure resources
+- name: aadPrimaryTenantId
+  value: '38b7fc89-dbe8-4ed1-a78b-39dfb6a217a8'
+
+# Specifies the Azure AD Tenant Name of azure resources
+- name: aadPrimaryTenantName
+  value: 'cmhc-schl.gc.ca'
+
+# Specifies the primary Azure region.
+- name: azPrimaryRegion
+  value: 'canadaeast'
+
+# Specifies the secondary Azure region.
+- name: azSecondaryRegion
+  value: 'canadacentral'
