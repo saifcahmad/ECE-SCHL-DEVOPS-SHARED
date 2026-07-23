@@ -1,0 +1,39 @@
+#region####################### SYSTEM VARIABLES ###############################
+# Author: Central DevOps Team
+# Name: system variables (VARIABLES TEMPLATE)
+#
+#   Contains system-wide global variables
+#
+#endregion#####################################################################
+
+variables:
+
+  # Name of the Azure DevOps organization instance.
+  organizationName: 'cmhcvsts'
+
+  # Name to use when publishing pipeline artifacts.
+  artifactName: $(Build.DefinitionName)-v$(version)
+
+  # The default directory where pipeline scripts are downloaded to.
+  artifactDirectory: '$(Pipeline.Workspace)/$(artifactName)'
+
+  scriptsDirectory: '$(artifactDirectory)/shared/scripts'
+
+  # Pad Strings with extra characters to prevent extraneous errors
+  # converts environmentPrefix EDDV1 to EDDV
+  environment4Prefix: 'pwsh: "$(environmentPrefix)     ".Substring(0,4).Trim()'
+
+  # converts environmentPrefix EDDV1 to DV1
+  environment3Prefix: 'pwsh: "$(environmentPrefix)     ".Substring(2,3).Trim()'
+
+  # converts environmentPrefix EDDV1 to DV
+  environment2Prefix: 'pwsh: "$(environmentPrefix)     ".Substring(2,2).Trim()'
+
+  # converts environmentPrefix EDDV1 to ED
+  region2Prefix: 'pwsh: "$(environmentPrefix)  ".Substring(0,2).Trim()'
+
+  # converts environmentPrefix EDDV1 to E
+  region1Prefix: 'pwsh: "$(environmentPrefix)  ".Substring(0,1).Trim()'
+
+  # converts environmentPrefix EDDV1 to D
+  realm1Prefix: 'pwsh: "$(environmentPrefix)   ".Substring(1,1)'
