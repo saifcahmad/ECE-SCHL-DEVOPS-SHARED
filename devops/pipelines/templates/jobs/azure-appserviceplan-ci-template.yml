@@ -1,0 +1,28 @@
+#region#################AZURE APP SERVICE PLAN TEMPLATE#######################
+# Author: Central DevOps Team
+# Name: azure-appserviceplan (JOB TEMPLATE)
+#
+# This job template contains the ci steps for an azure app service plan
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+# Required:
+#
+# Optional:
+#
+#
+###############################################################################
+parameters:
+# Custom object to bundle core parameters used by base template
+- name: coreParameters
+  type: object
+  default: {}
+
+jobs:
+- template: /devops/pipelines/templates/jobs/arm-template-ci-template.yml@shared
+  parameters:
+    coreParameters: ${{ parameters.coreParameters}} # insert buildVersion, environment, pool, realm
+    armTemplateFolder: app-service-plan
+
+      
