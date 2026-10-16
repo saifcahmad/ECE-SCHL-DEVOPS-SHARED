@@ -1,0 +1,117 @@
+#region###################### CUSTOM CI TEMPLATE ##############################
+# Author: Central DevOps Team
+# Name: azure-search-services ci template (JOB TEMPLATE)
+#
+# This job template defines the ci steps for preparing for a search services
+# arm-template deployment
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+parameters:
+
+# Custom object to bundle core parameters used by base template
+- name: coreParameters
+  type: object
+
+# Specifies the folder location that contains the cognitive search config files.
+- name: cognitiveSearchDataSourcesFolder
+  type: string
+  default: ''
+
+# Specifies the folder location that contains the cognitive search config files.
+- name: cognitiveSearchIndexersFolder
+  type: string
+  default: ''
+
+# Specifies the folder location that contains the cognitive search config files.
+- name: cognitiveSearchIndexesFolder
+  type: string
+  default: ''
+
+# Specifies the folder location that contains the cognitive search config files.
+- name: cognitiveSearchSkillsetsFolder
+  type: string
+  default: ''
+
+# Specifies the post-build steps
+- name: postBuildSteps
+  type: stepList
+  default: []
+
+#endregion#####################################################################
+
+jobs:
+- template: /devops/pipelines/templates/jobs/arm-template-ci-template.yml
+  parameters:
+    armTemplateFolder: "cognitive-search"
+    coreParameters: ${{ parameters.coreParameters}} # insert buildVersion, environment, pool, realm
+
+    # Copy Search Services files to create the components (data source, index, indexer, etc.)
+    baseParameters:
+      postBuildSteps:
+      # Copy custom scripts
+      - task: CopyFiles@2
+        displayName: 'Copy shared scripts to Staging Directory'
+        inputs:
+          sourceFolder: '$(sharedFilesBaseDirectory)/devops/pipelines/scripts'
+          contents: |
+            helpers/AzConnectionStringHelper.ps1
+            helpers/PipelineVariableHelper.ps1
+            New-AzCognitiveSearchConfig.ps1
+            Add-AzConnectionString.ps1
+          targetFolder: '$(Build.StagingDirectory)/shared/scripts'
+          cleanTargetFolder: false
+          flattenFolders: false
+          overwrite: true
+
+      # Copy cognitive data sources configuration files to artifact folder, if present
+      - ${{ if ne( parameters.cognitiveSearchDataSourcesFolder, '') }}:
+        - task: CopyFiles@2
+          displayName: 'Copy Data Sources files to Staging Directory'
+          inputs:
+            sourceFolder: '$(buildFilesBaseDirectory)/${{ parameters.cognitiveSearchDataSourcesFolder }}'
+            contents: '*.json'
+            targetFolder: '$(Build.StagingDirectory)/cognitive-search/data-sources'
+            cleanTargetFolder: false
+            overwrite: true
+            flattenFolders: false
+
+      # Copy cognitive indexers configuration files to artifact folder, if present
+      - ${{ if ne( parameters.cognitiveSearchIndexersFolder, '') }}:
+        - task: CopyFiles@2
+          displayName: 'Copy Indexers files to Staging Directory'
+          inputs:
+            sourceFolder: '$(buildFilesBaseDirectory)/${{ parameters.cognitiveSearchIndexersFolder }}'
+            contents: '*.json'
+            targetFolder: '$(Build.StagingDirectory)/cognitive-search/indexers'
+            cleanTargetFolder: false
+            overwrite: true
+            flattenFolders: false
+
+      # Copy cognitive indexes configuration files to artifact folder, if present
+      - ${{ if ne( parameters.cognitiveSearchIndexesFolder, '') }}:
+        - task: CopyFiles@2
+          displayName: 'Copy Indexes files to Staging Directory'
+          inputs:
+            sourceFolder: '$(buildFilesBaseDirectory)/${{ parameters.cognitiveSearchIndexesFolder }}'
+            contents: '*.json'
+            targetFolder: '$(Build.StagingDirectory)/cognitive-search/indexes'
+            cleanTargetFolder: false
+            overwrite: true
+            flattenFolders: false
+
+      # Copy cognitive skillsets configuration files to artifact folder, if present
+      - ${{ if ne( parameters.cognitiveSearchSkillsetsFolder, '') }}:
+        - task: CopyFiles@2
+          displayName: 'Copy Skillsets files to Staging Directory'
+          inputs:
+            sourceFolder: '$(buildFilesBaseDirectory)/${{ parameters.cognitiveSearchSkillsetsFolder }}'
+            contents: '*.json'
+            targetFolder: '$(Build.StagingDirectory)/cognitive-search/skillsets'
+            cleanTargetFolder: false
+            overwrite: true
+            flattenFolders: false
+
+      # insert user custom steps
+      - ${{ parameters.postBuildSteps }}
