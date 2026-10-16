@@ -1,0 +1,292 @@
+#region###################### CUSTOM CD TEMPLATE ##############################
+# Author: Central DevOps Team
+# Name: azure-cosmos-database cd template (JOB TEMPLATE)
+#
+# This job template deploys an Azure Cosmos Database with the appropriate
+# settings (firewall rules, containers, consistencyLevel, dbname, etc).
+#
+# Uses: arm-template-cd-template.yml
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+# Required:
+#   Azure Cosmos Database Parameters:
+#     cosmosDatabaseAccountName
+#     databaseName
+#     containers
+#     logAnalyticsWorkspaceResourceGroupName
+#     logAnalyticsWorkspaceName
+#
+# Optional:
+#   Azure ResourceTags:
+#     applicationTag, defaults to $(projectName) [project]
+#     environmentTag, defaults to $(environmentName) [stage]
+#     expirationDateTag, defaults to $(expirationDateTag) [stage]
+#     snowDepTag, defaults to $(snowDepTag) [stage]
+#
+#   Resource Dependencies:
+#     azServiceConnection, defaults to realm-based "ARM-ServiceConnection-{{realm}}"
+#     keyVaultName, defaults to '' [system]
+#     resourceGroupName, defaults to $(azResourceGroupName) [system]
+#
+#   Azure Cosmos Database Parameters:
+#     consistencyLevel, defaults to Session [template]
+#     maxStalenessPrefix, defaults to 100 [template]
+#     maxIntervalInSeconds, defaults to 5 [template]
+#     systemManagedFailover, defaults to false [template]
+#     databaseThroughputLimit, defaults to 0 [template]
+#     cosmosDatabaseAccountLocations, defaults to json string [system]
+#     backupPolicy, defaults to json string [system]
+#     ipRules, defaults to [] [template]
+#     publicNetworkAccess, defaults to Disabled [template]
+#
+#     cosmosDbConnectionStringDetails, defaults to {} [system]
+#
+###############################################################################
+parameters:
+
+#region [Base Template]::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Custom object to bundle core parameters used by base template
+- name: coreParameters
+  type: object
+  default: {}
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [Azure Resource Tags] :::::::::::::::::::::::::::::::::::::::::::::::::
+# Azure Resource Tag that specifies the application tag associated with the
+# underlying ARM template. This tag is used for billing/auditing purposes and
+# ties the resource back to a specific project.
+- name: applicationTag
+  type: string
+  default: $(projectName)
+
+# Azure Resource Tag that specifies the expiration date tag associated with the
+# underlying ARM template. This tag specifies the longevity of the resource and
+# is used for billing purposes.
+- name: expirationDateTag
+  type: string
+  default: '$(expirationDateTag)'
+
+# Azure Resource Tag that specifies the environment tag to user for the resource.
+- name: environmentTag
+  type: string
+  default: ''
+
+# Azure Resource Tag is used for billing/auditing purposes and is used to track
+# the resource back to an approval workflow.
+- name: snowDepTag
+  type: string
+  default: '$(snowDepTag)'
+#endregion [ Azure Resource Tags ]:::::::::::::::::::::::::::::::::::::::::::::
+
+#region [Resource Dependencies] :::::::::::::::::::::::::::::::::::::::::::::::
+# Specifies the Azure Service Connection to use when authenticating with the Azure Cloud.
+- name: azServiceConnection
+  type: string
+  default: 'ARM-ServiceConnection-{{realm}}'
+
+# Specifies the name of Key Vault that contains the secrets.
+#   Used to push the Cosmos DB account connection string
+- name: keyVaultName
+  type: string
+  default: ''
+
+# Specifies the name of the resource group the ARM template should target.
+- name: resourceGroupName
+  type: string
+  default: $(azResourceGroupName)
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [Azure Cosmos Database]::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Azure Cosmos DB account name, max length 44 characters, lowercase.
+- name: cosmosDatabaseAccountName
+  type: string
+
+# The Azure Cosmos DB default consistency level for this account.
+- name: consistencyLevel
+  type: string
+  default: 'Session'
+
+# Max stale requests. Required for BoundedStaleness. Valid ranges, Single Region: 10 to 2147483647. Multi Region: 100000 to 2147483647.
+- name: maxStalenessPrefix
+  type: string
+  default: '100'
+
+# Max lag time (minutes). Required for BoundedStaleness. Valid ranges, Single Region: 5 to 84600. Multi Region: 300 to 86400.
+- name: maxIntervalInSeconds
+  type: string
+  default: '5'
+
+# Enable system managed failover for regions
+- name: systemManagedFailover
+  type: string
+  default: 'false'
+
+# The Database Name in the Cosmos DB Account
+- name: databaseName
+  type: string
+
+# Array of Container Object with all required attributes in a JSON format.
+# The 'id' and 'partitionKey.paths' attributes are required and should be declared for each container.
+# Other attributes are optional, but will have a default value if not set as in the following example.
+# [{
+#   "id": "<container-name>",
+#   "partitionKey": { "paths": ["<your-partitionkey-path>"], "kind": "Hash"},
+#   "indexingPolicy": {
+#       "indexingMode": "consistent",
+#       "automatic": true,
+#       "includedPaths": [{"path": "/*"}],
+#       "excludedPaths": [{"path": "/\"_etag\"/?"}]
+#   },
+#   "uniqueKeyPolicy": { "uniqueKeys": [] },
+#   "conflictResolutionPolicy": {
+#       "mode": "LastWriterWins",
+#       "conflictResolutionPath": "/_ts"
+#   }
+# }]
+- name: containers
+  type: string
+
+# Throughput limit for the database. 0 for none.
+- name: databaseThroughputLimit
+  type: string
+  default: '0'
+
+# Throughput limit for specified containers. Containers will be set to 400 if not set by default by Azure.
+# Example:
+# [
+#   {
+#     "id": "<container-name>",
+#     "throughput": "<container-throughput>"
+#   }
+# ]
+- name: containersThroughputLimit
+  type: string
+  default: '[]'
+
+# The Azure Cosmos Database account locations with failover and zone redundancy.
+- name: cosmosDatabaseAccountLocations
+  type: string
+  default: |
+    [
+      {
+        "locationName": "$(location)",
+        "failoverPriority": 0,
+        "isZoneRedundant": false
+      }
+    ]
+
+# The Azure Cosmos Database account backup policy.
+- name: backupPolicy
+  type: string
+  default: |
+    {
+      "type": "Periodic",
+      "periodicModeProperties": {
+        "backupIntervalInMinutes": 240,
+        "backupRetentionIntervalInHours": 8,
+        "backupStorageRedundancy": "Geo"
+      }
+    }
+
+# The set of IP addresses or IP address ranges in CIDR form to be included as the allowed list of client IPs for a given database account.
+- name: ipRules
+  type: string
+  default: '[]'
+
+# Whether requests from Public Network are allowed. - Enabled or Disabled.
+- name: publicNetworkAccess
+  type: string
+  default: 'Disabled'
+
+# Name of the resource group that log analytics workspace resource belongs to.
+- name: logAnalyticsWorkspaceResourceGroupName
+  type: string
+
+# Name of the log analytics workspace instance to write logs to.
+- name: logAnalyticsWorkspaceName
+  type: string
+
+# Upload the Cosmos DB connection string to a KV if specified.
+- name: cosmosDbConnectionStringDetails
+  type: object
+  default: {}
+
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#endregion#####################################################################
+jobs:
+- template: /devops/pipelines/templates/jobs/arm-template-cd-template.yml
+  parameters:
+    coreParameters: ${{ parameters.coreParameters}} # pass in buildVersion, environment, pool, realm
+
+    # ARM Template Parameters
+    applicationTag: ${{ parameters.applicationTag }}
+    environmentTag: ${{ parameters.environmentTag }}
+    expirationDateTag: ${{ parameters.expirationDateTag }}
+    snowDepTag: ${{ parameters.snowDepTag }}
+
+    resourceGroupName: ${{ parameters.resourceGroupName }}
+
+    # Declare any additional ARM Template parameters
+    variables:
+      cosmosDatabaseAccountName: ${{ parameters.cosmosDatabaseAccountName }}
+      consistencyLevel: ${{ parameters.consistencyLevel }}
+      maxStalenessPrefix: ${{ parameters.maxStalenessPrefix }}
+      maxIntervalInSeconds: ${{ parameters.maxIntervalInSeconds }}
+      systemManagedFailover: ${{ parameters.systemManagedFailover }}
+      databaseName: ${{ parameters.databaseName }}
+      containers: ${{ parameters.containers }}
+      databaseThroughputLimit: ${{ parameters.databaseThroughputLimit }}
+      containersThroughputLimit: ${{ parameters.containersThroughputLimit }}
+      cosmosDatabaseAccountLocations: ${{ parameters.cosmosDatabaseAccountLocations }}
+      backupPolicy: ${{ parameters.backupPolicy }}
+      ipRules: ${{ parameters.ipRules }}
+      publicNetworkAccess: ${{ parameters.publicNetworkAccess }}
+      logAnalyticsWorkspaceResourceGroupName: ${{ parameters.logAnalyticsWorkspaceResourceGroupName }}
+      logAnalyticsWorkspaceName: ${{ parameters.logAnalyticsWorkspaceName }}
+
+    # validate that following _additional_ variables are present
+    requiredVariables:
+      cosmosDatabaseAccountName: "$(cosmosDatabaseAccountName)"
+      consistencyLevel: "$(consistencyLevel)"
+      maxStalenessPrefix: "$(maxStalenessPrefix)"
+      maxIntervalInSeconds: "$(maxIntervalInSeconds)"
+      systemManagedFailover: "$(systemManagedFailover)"
+      databaseName: "$(databaseName)"
+
+      databaseThroughputLimit: "$(databaseThroughputLimit)"
+      publicNetworkAccess: "$(publicNetworkAccess)"
+      logAnalyticsWorkspaceResourceGroupName: "$(logAnalyticsWorkspaceResourceGroupName)"
+      logAnalyticsWorkspaceName: "$(logAnalyticsWorkspaceName)"
+
+      #TODO: validate malformed array
+      # ipRules: "$(ipRules)"
+
+      # TODO: validate malformed json.
+      #containers: "$(containers)"
+      #backupPolicy: "$(backupPolicy)"
+      #containersThroughputLimit: "$(containersThroughputLimit)"
+      #cosmosDatabaseAccountLocations: "$(cosmosDatabaseAccountLocations)"
+
+    postDeploymentSteps:
+    # Check if cosmosDbConnectionStringDetails and keyVaultName have been specified.
+    - ${{ if and(parameters.cosmosDbConnectionStringDetails, parameters.keyVaultName) }}:
+      # Exports the Cosmos DB connnection strings to the Key Vault post deployment.
+      - task: AzurePowerShell@5
+        displayName: 'Export Connection Strings to Key Vault'
+        inputs:
+          azureSubscription: ${{ replace( parameters.azServiceConnection, '{{realm}}', parameters.coreParameters.realm) }}
+          ScriptType: 'FilePath'
+          ScriptPath: '$(scriptsDirectory)/Add-AzConnectionString.ps1'
+          ScriptArguments: >
+            -VaultName "${{ parameters.keyVaultName }}"
+            -ConnectionStringDetails ('${{ convertToJson( parameters.cosmosDbConnectionStringDetails ) }}' | ConvertFrom-Json)
+            -ConnectionStringType "COSMOSDB"
+          FailOnStandardError: true
+          azurePowerShellVersion: 'LatestVersion'
+          pwsh: true
