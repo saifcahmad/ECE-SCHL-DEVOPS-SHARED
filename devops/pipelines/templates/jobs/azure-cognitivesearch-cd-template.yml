@@ -1,0 +1,288 @@
+#region###################### CUSTOM CD TEMPLATE ##############################
+# Author: Central DevOps Team
+# Name: azure-search-services cd template (JOB TEMPLATE)
+#
+# This job template deploys azure-search-services with the appropriate
+# settings (firewall rules, sku, replica, partition, etc) as well as
+# provisioning the search solution components (data source, indexer, etc.)
+#
+# Uses: arm-template-cd-template.yml
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+# Required:
+#   Search Services Parameters:
+#     cognitiveSearchName
+
+#
+# Optional:
+#   Azure ResourceTags:
+#     applicationTag, defaults to $(projectName) [project]
+#     environmentTag, defaults to $(environmentName) [stage]
+#     expirationDateTag, defaults to $(expirationDateTag) [stage]
+#     snowDepTag, defaults to $(snowDepTag) [stage]
+#
+#   Resource Dependencies:
+#     azServiceConnection, defaults to realm-based "ARM-ServiceConnection-{{realm}}"
+#
+#   Search Services Parameters:
+#     resourceGroupName, defaults to $(azResourceGroupName) [system]
+#     cognitiveSearchSku, defaults to standard [template]
+#     cognitiveSearchReplicaCount, defaults to 3 [template]
+#     cognitiveSearchPartitionCount, defaults to 2 [template]
+#     hostingMode, defaults to default [template]
+#     publicNetworkAccess, defaults to enabled [template]
+#     bypassRules, defaults to AzurePortal [template]
+#     firewallRules, defaults to [] [template]
+#     logAnalyticsWorkspaceResourceGroupName, defaults to "" [template]
+#     logAnalyticsWorkspaceName, defaults to "" [template]
+#
+###############################################################################
+parameters:
+
+#region [Base Template]::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Custom object to bundle core parameters used by base template
+- name: coreParameters
+  type: object
+  default: {}
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [Azure Resource Tags] :::::::::::::::::::::::::::::::::::::::::::::::::
+# Azure Resource Tag that specifies the application tag associated with the
+# underlying ARM template. This tag is used for billing/auditing purposes and
+# ties the resource back to a specific project.
+- name: applicationTag
+  type: string
+  default: $(projectName)
+
+# Azure Resource Tag that specifies the expiration date tag associated with the
+# underlying ARM template. This tag specifies the longevity of the resource and
+# is used for billing purposes.
+- name: expirationDateTag
+  type: string
+  default: '$(expirationDateTag)'
+
+# Azure Resource Tag that specifies the environment tag to user for the resource.
+- name: environmentTag
+  type: string
+  default: ''
+
+# Azure Resource Tag is used for billing/auditing purposes and is used to track
+# the resource back to an approval workflow.
+- name: snowDepTag
+  type: string
+  default: '$(snowDepTag)'
+#endregion [ Azure Resource Tags ]:::::::::::::::::::::::::::::::::::::::::::::
+
+#region [Resource Dependencies] :::::::::::::::::::::::::::::::::::::::::::::::
+# Specifies the Azure Service Connection to use when authenticating with the Azure Cloud.
+- name: azServiceConnection
+  type: string
+  default: 'ARM-ServiceConnection-{{realm}}'
+
+# Specifies the name of Key Vault that contains the secrets.
+# If this parameter is empty, the corresponding step is skipped.
+- name: keyVaultName
+  type: string
+  default: ''
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [Search Services]::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Specifies the name of the resource group the ARM template should target.
+- name: resourceGroupName
+  type: string
+  default: $(azResourceGroupName)
+
+# Service name must only contain lowercase letters, digits or dashes, cannot use dash as the first two
+# or last one characters, cannot contain consecutive dashes, and is limited between 2 and 60 characters in length.
+- name: cognitiveSearchName
+  type: string
+
+# The SKU of the Search Service.
+- name: cognitiveSearchSku
+  type: string
+  default: 'standard'
+
+# Replicas distribute search workloads across the service. You need at least two replicas to support
+# high availability of query workloads (not applicable to the free tier).
+- name: cognitiveSearchReplicaCount
+  type: string
+  default: 3
+
+# Partitions are units of storage. Increasing partitions adds capacity and speed by spreading an index over multiple shards.
+- name: cognitiveSearchPartitionCount
+  type: string
+  default: 2
+
+# Applicable only for SKUs set to standard3. You can set this property to enable a single, high density partition
+# that allows up to 1000 indexes, which is much higher than the maximum indexes allowed for any other SKU.
+- name: hostingMode
+  type: string
+  default: 'default'
+
+# If set to 'disabled', traffic over public interface is not allowed, and private endpoint connections
+# would be the exclusive access method.
+- name: publicNetworkAccess
+  type: string
+  default: 'enabled'
+
+# Possible origins of inbound traffic that can bypass the rules defined in the 'ipRules' section.
+- name: bypassRules
+  type: string
+  default: 'AzurePortal'
+
+# A list of IP restriction rules that defines the inbound network(s) with allowing access to the search service endpoint.
+- name: firewallRules
+  type: string
+  default: '[]'
+
+# Name of the resource group that log analytics workspace resource belongs to.
+- name: logAnalyticsWorkspaceResourceGroupName
+  type: string
+  default: ''
+
+# Name of the log analytics workspace instance to write logs to.
+- name: logAnalyticsWorkspaceName
+  type: string
+  default: ''
+
+# Upload a Cognitive Search Key(s) to a KV if specified. Expected the following structure:
+# - secretName: "<the secret name to upload in the kv>"
+#   serviceName: "$(cognitiveSearchName)"
+#   resourceGroupName: "$(azResourceGroupName)"
+#   adminKeyType: "Primary"
+- name: uploadCognitiveSearchApiKeyToKeyVault
+  type: object
+  default: {}
+
+# Specifies if we deploy the configuration files to Cognitive Search.
+- name: configurationDeploymentEnabled
+  type: string
+  default: 'true'
+
+# Specify the deploy configuration mode of Cognitive Search. Accepted values are Commplete and Incremental. Defautls to Complete.
+# - Complete deletes configurations that exists in Cognitive Search, but aren't in the build folder
+# - Incremental leaves unchanged configurations that exists in Cognitive Search, but aren't in the build folder. Configurations are
+#   added or updated in Cognitive Search.
+- name: configurationDeploymentMode
+  type: string
+  default: "Complete"
+  values:
+  - Complete
+  - Incremental
+
+# Specify custom variables to be used by the configuration files during the token replacement.
+# This is useful if you want to reference secret variables such as KeyVault secret reference with the following structure: "$(keyvault-my-secret)"
+#
+# E.g. where cosmosDatabaseAccessKey is a pipeline variable with the value "$(keyvault-$(environmentPrefix)-$(projectName)-COSMOSDB-ACCESSKEY)"
+#    and we want to replace the token ${{ parameters.COSMOS_DATABASE_ACCESS_KEY }} in one of the configuration files with the secret value.
+# configurationAdditionalParameters:
+#   COSMOS_DATABASE_ACCESS_KEY: "$(cosmosDatabaseAccessKey)"
+- name: configurationAdditionalParameters
+  type: object
+  default: {}
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+#region [User-Defined Deploy Steps] :::::::::::::::::::::::::::::::::::::::::::
+- name: preDeploySteps
+  type: stepList
+  default: []
+
+- name: postDeploySteps
+  type: stepList
+  default: []
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+jobs:
+- template: /devops/pipelines/templates/jobs/arm-template-cd-template.yml
+  parameters:
+    coreParameters: ${{ parameters.coreParameters}} # pass in buildVersion, environment, pool, realm
+
+    keyVaultName: ${{ parameters.keyVaultName }}
+
+    # ARM Template Parameters
+    applicationTag: ${{ parameters.applicationTag }}
+    environmentTag: ${{ parameters.environmentTag }}
+    expirationDateTag: ${{ parameters.expirationDateTag }}
+    snowDepTag: ${{ parameters.snowDepTag }}
+
+    resourceGroupName: ${{ parameters.resourceGroupName }}
+
+    # Declare any additional ARM Template parameters
+    variables:
+      cognitiveSearchName: ${{ parameters.cognitiveSearchName }}
+      cognitiveSearchSku: ${{ parameters.cognitiveSearchSku }}
+      cognitiveSearchReplicaCount: ${{ parameters.cognitiveSearchReplicaCount }}
+      cognitiveSearchPartitionCount: ${{ parameters.cognitiveSearchPartitionCount }}
+      hostingMode: ${{ parameters.hostingMode }}
+      publicNetworkAccess: ${{ parameters.publicNetworkAccess }}
+      bypassRules: ${{ parameters.bypassRules }}
+      firewallRules: ${{ parameters.firewallRules }}
+      logAnalyticsWorkspaceResourceGroupName: ${{ parameters.logAnalyticsWorkspaceResourceGroupName }}
+      logAnalyticsWorkspaceName: ${{ parameters.logAnalyticsWorkspaceName }}
+      configurationDeploymentEnabled: ${{ parameters.configurationDeploymentEnabled }}
+
+    # validate that following _additional_ variables are present
+    requiredVariables:
+      cognitiveSearchName: "$(cognitiveSearchName)"
+      cognitiveSearchSku: "$(cognitiveSearchSku)"
+      cognitiveSearchReplicaCount: "$(cognitiveSearchReplicaCount)"
+      cognitiveSearchPartitionCount: "$(cognitiveSearchPartitionCount)"
+      hostingMode: "$(hostingMode)"
+      publicNetworkAccess: "$(publicNetworkAccess)"
+      bypassRules: "$(bypassRules)"
+
+      #todo: validate malformed array.....
+      #firewallRules: $(firewallRules)
+
+    preDeploymentSteps:
+    # Execute pre-deployment steps, if required
+    - ${{ parameters.preDeploySteps }}
+
+    postDeploymentSteps:
+    # Required for the AzCognitiveSearchConfig.ps1 script.
+    - template: /devops/pipelines/templates/steps/manage-powershell-modules-step.yml
+      parameters:
+        modules:
+        - name: 'Az.Search'
+          upstream: true
+
+    - task: AzurePowerShell@5
+      displayName: 'Deploy Cognitive Search Config Components'
+      condition: eq(lower(variables['configurationDeploymentEnabled']), 'true')
+      inputs:
+        azureSubscription: ${{ replace( parameters.azServiceConnection, '{{realm}}', parameters.coreParameters.realm) }}
+        ScriptType: 'FilePath'
+        ScriptPath: '$(scriptsDirectory)/New-AzCognitiveSearchConfig.ps1'
+        ScriptArguments: >
+          -CognitiveSearchName '$(cognitiveSearchName)'
+          -CognitiveSearcResourceGroupName '${{ parameters.resourceGroupName }}'
+          -FolderPath '$(Pipeline.Workspace)/$(artifactName)/cognitive-search'
+          -DeploymentMode '${{ parameters.configurationDeploymentMode }}'
+        FailOnStandardError: true
+        azurePowerShellVersion: 'LatestVersion'
+        pwsh: true
+      env:
+        ${{ insert }}: ${{ parameters.configurationAdditionalParameters }}
+
+    # Check if cosmosDbConnectionStringDetails and keyVaultName have been specified.
+    - ${{ if and(parameters.uploadCognitiveSearchApiKeyToKeyVault, parameters.keyVaultName) }}:
+      # Exports the Cosmos DB connnection strings to the Key Vault post deployment.
+      - task: AzurePowerShell@5
+        displayName: 'Export Cognitive Search Api Key to Key Vault'
+        inputs:
+          azureSubscription: ${{ replace( parameters.azServiceConnection, '{{realm}}', parameters.coreParameters.realm) }}
+          ScriptType: 'FilePath'
+          ScriptPath: '$(scriptsDirectory)/Add-AzConnectionString.ps1'
+          ScriptArguments: >
+            -VaultName "${{ parameters.keyVaultName }}"
+            -ConnectionStringDetails ('${{ convertToJson( parameters.uploadCognitiveSearchApiKeyToKeyVault ) }}' | ConvertFrom-Json)
+            -ConnectionStringType "COGNITIVESEARCH"
+          FailOnStandardError: true
+          azurePowerShellVersion: 'LatestVersion'
+          pwsh: true
+
+    # Execute post-deployment steps, if required
+    - ${{ parameters.postDeploySteps }}
