@@ -1,0 +1,166 @@
+#region################# APP SERVICE PLAN TEMPLATE ##########################
+# Author: Central DevOps Team
+# Name: azure-storageaccount (JOB TEMPLATE)
+#
+# This job template contains the deployment steps for an azure storageaccount
+#
+#endregion#####################################################################
+
+#region########################## PARAMETERS ##################################
+# Required:
+#   Storage Account Parameters:
+#   - storageAccountName
+#
+# Optional:
+#   Storage Account Parameters:
+#   - storageAccountSku: defaults to 'Standard_LRS'
+#   - storageAccountTier: defaults to 'Standard'
+#   - blobManagementPolicyRules: object
+#   - queues: string[] array for queues to be created
+#
+###############################################################################
+parameters:
+
+#region [Base Template]::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Custom object to bundle core parameters used by base template
+- name: coreParameters
+  type: object
+  default: {}
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::  
+
+#region [Azure Resource Tags] :::::::::::::::::::::::::::::::::::::::::::::::::
+# Azure Resource Tag that specifies the application tag associated with the 
+# underlying ARM template. This tag is used for billing/auditing purposes and 
+# ties the resource back to a specific project.
+- name: applicationTag
+  type: string
+  default: $(projectName)
+
+# Azure Resource Tag that specifies the expiration date tag associated with the 
+# underlying ARM template. This tag specifies the longevity of the resource and 
+# is used for billing purposes.
+- name: expirationDateTag
+  type: string
+  default: '$(expirationDateTag)'
+
+# Azure Resource Tag that specifies the environment tag to user for the resource.
+- name: environmentTag
+  type: string
+  default: ''
+
+# Azure Resource Tag is used for billing/auditing purposes and is used to track
+# the resource back to an approval workflow.
+- name: snowDepTag
+  type: string
+  default: '$(snowDepTag)'
+#endregion [ Azure Resource Tags ]:::::::::::::::::::::::::::::::::::::::::::::
+
+# Specifies the name of the resource group the ARM template should target.
+- name: resourceGroupName
+  type: string
+  default: $(azResourceGroupName)
+#endregion:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Specifies the Operating System the hosting plan should use.
+- name: hostingPlanOs
+  type: string
+  default: 'Linux'
+
+# Specifies the sku name of the hosting plan.
+- name: hostingPlanName
+  type: string
+
+# Specifies the SKU name of the hosting plan.
+- name: hostingPlanSkuName
+  type: string
+  default: 'Y1'
+
+# Specifies the sku tier of the hosting plan.
+- name: hostingPlanSkuTier
+  type: string
+  default: 'Dynamic'
+
+# Specifies the current number of instances assigned to the hosting plan.
+- name: hostingPlanSkuCapacity
+  type: string # allow runtime variable support
+  default: '2'
+
+# Specifies the maximum number of elastic workers.
+- name: maximumElasticWorkerCount
+  type: string # allow runtime variable support
+  default: '20'
+
+jobs:
+- template: /devops/pipelines/templates/jobs/arm-template-cd-template.yml@shared
+  parameters:
+    coreParameters: ${{ parameters.coreParameters}} # pass in buildVersion, environment, pool, realm
+
+    # ARM Template Parameters
+    applicationTag: ${{ parameters.applicationTag }}
+    environmentTag: ${{ parameters.environmentTag }}
+    expirationDateTag: ${{ parameters.expirationDateTag }}
+    snowDepTag: ${{ parameters.snowDepTag }}
+
+    # Resource Dependencies
+    resourceGroupName: ${{ parameters.resourceGroupName }}
+
+    variables:
+      # Values for ARM template parameters defined in azuredeploy.json.
+      # These values can be overridden in the pipeline's stage templates.
+      # prevent circular references for global or stage variables
+      hostingPlanOs: ${{ parameters.hostingPlanOs }}
+      hostingPlanName: ${{ parameters.hostingPlanName }}
+      hostingPlanSkuName: ${{ parameters.hostingPlanSkuName }}
+      hostingPlanSkuTier: ${{ parameters.hostingPlanSkuTier }}
+      hostingPlanSkuCapacity: ${{ parameters.hostingPlanSkuCapacity }}
+      maximumElasticWorkerCount: ${{ parameters.maximumElasticWorkerCount }}
+
+    requiredVariables:
+      hostingPlanOs: $(hostingPlanOs)
+      hostingPlanName: $(hostingPlanName)
+      hostingPlanSkuName: $(hostingPlanSkuName)
+      hostingPlanSkuTier: $(hostingPlanSkuTier)
+      hostingPlanSkuCapacity: $(hostingPlanSkuCapacity)
+      maximumElasticWorkerCount: $(maximumElasticWorkerCount)
+
+    preDeploymentSteps:
+
+    # Ensure that variables passed in are supported with the SKU
+    - task: PowerShell@2
+      displayName: 'Validate SKU settings'
+      inputs:
+        pwsh: true
+        targetType: 'inline'
+        script: |
+          # get variables for pipeline
+          $hostingPlanSkuName = "$(hostingPlanSkuName)"
+          $skuCapacity        = "$(hostingPlanSkuCapacity)"
+          $workerCount        = "$(maximumElasticWorkerCount)"
+
+          # validate that correct values are used
+          switch ($hostingPlanSkuName) {
+
+            # Dynamic does not support skuCapacity higher than 1
+            "Dynamic" {
+              # force hostingPlanSkuCapacity + maximumElasticWorkerCount to defaults
+              Write-Host "##vso[task.setvariable variable=hostingPlanSkuCapacity]1"
+              Write-Host "##vso[task.setvariable variable=maximumElasticWorkerCount]20"
+            }
+
+            # ElasticPremium needs parameters to be numbers
+            "ElasticPremium" {
+              [int]$nWorkerCount = 0;
+              [int]$nSkuCapacity = 0;
+
+              # verify that skuCapacity is a number
+              if (-not [int]::TryParse($skuCapacity, [ref]$nSkuCapacity)) {
+                Write-Host "##[task.logIssue type=warning]hostingPlanSkuCapacity value is invalid, defaulting to 1"
+                Write-Host "##vso[task.setvariable variable=hostingPlanSkuCapacity]1"
+              }
+              # verify that workercount is a number
+              if (-not [int]::TryParse($workerCount, [ref]$nWorkerCount)) {
+                Write-Host "##[task.logIssue type=warning]maximumElasticWorkerCount value is invalid, defaulting to 20"
+                Write-Host "##vso[task.setvariable variable=maximumElasticWorkerCount]20"
+              }
+            }
+          }
